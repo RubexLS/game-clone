@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+    <link rel="stylesheet" href="css/styles.css">
+    <link rel="stylesheet" href="css/components.css">
+</head>
+<body>
+        <div id="game-container">
+        <!-- Panel Lateral Izquierdo: Información de Jugadores -->
+        <aside id="players-panel">
+            <h2>Jugadores</h2>
+            <div id="players-list">
+                <!-- Se llenará dinámicamente con JS -->
+            </div>
+            <div id="game-controls">
+                <button id="btn-roll-dice" disabled>Lanzar Dados</button>
+                <button id="btn-end-turn" disabled>Terminar Turno</button>
+            </div>
+            <div id="game-log">
+                <h3>Historial</h3>
+                <div id="log-messages"></div>
+            </div>
+        </aside>
+
+        <!-- Tablero -->
+        <main id="board">
+            <!-- Centro del tablero (Grid Row 2 a 10, Col 2 a 10) -->
+            <div class="board-center">
+                <h1>MONOPOLY</h1>
+                <div id="dice-view">🎲 🎲</div>
+                <div id="current-turn-info">Esperando jugadores...</div>
+            </div>
+
+            <!-- Las 40 casillas se generarán dinámicamente con JavaScript -->
+            <!-- divs con clase .square del 0 al 39 -->
+        </main>
+    </div>
+
+    <!-- Scripts Modulares -->
+    <script type="module" src="js/app.js"></script>
+</body>
+</html>
