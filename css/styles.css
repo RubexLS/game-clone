@@ -84,3 +84,94 @@ body {
 .square-10 { grid-column: 1;  grid-row: 11; } /* Cárcel */
 .square-20 { grid-column: 1;  grid-row: 1;  } /* Parking */
 .square-30 { grid-column: 11; grid-row: 1;  } /* Ir a la Cárcel */
+
+/* --- Estilos para la Pantalla del Lobby --- */
+#lobby-screen {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background-color: #2c3e50;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 999;
+}
+
+.lobby-box {
+    background: #ffffff;
+    padding: 30px;
+    border-radius: 8px;
+    box-shadow: 0 10px 25px rgba(0,0,0,0.3);
+    width: 350px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.lobby-box h1 {
+    color: #e74c3c;
+    text-align: center;
+    margin: 0 0 10px 0;
+    font-size: 2rem;
+    letter-spacing: 2px;
+}
+
+.input-group {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.input-group label {
+    font-size: 0.85rem;
+    font-weight: bold;
+    color: #333;
+}
+
+.input-group input, .input-group select {
+    padding: 10px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-size: 1rem;
+}
+
+.lobby-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 10px;
+}
+
+.lobby-buttons button {
+    padding: 12px;
+    font-size: 1rem;
+    font-weight: bold;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+#btn-create-room {
+    background-color: #2ecc71;
+}
+
+#btn-create-room:hover {
+    background-color: #27ae60;
+}
+
+#btn-join-room {
+    background-color: #3498db;
+}
+
+#btn-join-room:hover {
+    background-color: #2980b9;
+}
+
+/* Clase Utilitaria para Ocultar Componentes */
+.hidden {
+    display: none !important;
+}

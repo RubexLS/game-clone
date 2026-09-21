@@ -8,7 +8,35 @@
     <link rel="stylesheet" href="css/components.css">
 </head>
 <body>
-        <div id="game-container">
+    <div id="lobby-screen">
+        <div class="lobby-box">
+            <h1>Monopoly Online</h1>
+            <div class="input-group">
+                <label for="lobby-username">Tu Nombre:</label>
+                <input type="text" id="lobby-username" placeholder="Ej. Carlos" maxlength="12">
+            </div>
+            <div class="input-group">
+                <label for="lobby-color">Color de Ficha:</label>
+                <select id="lobby-color">
+                    <option value="#e74c3c">Rojo</option>
+                    <option value="#3498db">Azul</option>
+                    <option value="#2ecc71">Verde</option>
+                    <option value="#f1c40f">Amarillo</option>
+                    <option value="#9b59b6">Morado</option>
+                </select>
+            </div>
+            <div class="input-group">
+                <label for="lobby-room">Código de Sala:</label>
+                <input type="text" id="lobby-room" placeholder="Ej. SALA123" uppercase>
+            </div>
+            <div class="lobby-buttons">
+                <button id="btn-create-room">Crear Nueva Sala</button>
+                <button id="btn-join-room">Unirse a Sala</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="game-container">
         <!-- Panel Lateral Izquierdo: Información de Jugadores -->
         <aside id="players-panel">
             <h2>Jugadores</h2>
@@ -37,6 +65,18 @@
             <!-- Las 40 casillas se generarán dinámicamente con JavaScript -->
             <!-- divs con clase .square del 0 al 39 -->
         </main>
+
+        <!-- Ventana Flotante de Compra (Oculta por defecto) -->
+        <div id="buy-property-modal" class="hidden">
+            <div class="modal-content">
+                <h3 id="modal-property-name">Propiedad Disponible</h3>
+                <p id="modal-property-price">Precio: $0</p>
+                <div class="modal-buttons">
+                    <button id="btn-confirm-buy">Comprar</button>
+                    <button id="btn-decline-buy">Pasar</button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Scripts Modulares -->
