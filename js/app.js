@@ -1,9 +1,9 @@
 import { renderBoard } from './ui/render.js';
 import { Player, drawPlayerToken } from './core/player.js';
 import { loginAnonymously } from './services/auth.js';
-import { createGameRoom, syncPlayerToRoom, listenToRoom, updateDiceAndTurn, buyPropertyInCloud, endTurnInCloud, getRoomSnapshot } from './services/network.js';
+import { createGameRoom, syncPlayerToRoom, listenToRoom, updateDiceResult, buyPropertyInCloud, endTurnInCloud, getRoomSnapshot } from './services/network.js';
 import { GameManager } from './core/game.js';
-import { getSquareById } from './core/board.js'; // Importante para leer los datos de la casilla actual
+import { getSquareById } from './core/board.js';
 
 // Variables globales para la sesión del jugador local
 let localPlayer = null;
@@ -40,9 +40,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnConfirmBuy = document.getElementById('btn-confirm-buy');
     const btnDeclineBuy = document.getElementById('btn-decline-buy');
 
-    // ==========================================
     // LÓGICA DE CONEXIÓN (LOBBY)
-    // ==========================================
 
     // Evento para CREAR una nueva sala en la nube
     btnCreateRoom?.addEventListener('click', async () => {
@@ -90,17 +88,36 @@ document.addEventListener('DOMContentLoaded', () => {
 
         try {
             const user = await loginAnonymously();
-            currentRoomId = roomCode;
+            const roomData = await getRoomSnapshot(roomCode);
 
+            if (!roomData) { 
+                alert( `La sala "${roomCode}" no existe. ` + `Verifica el código e inténtalo nuevamente.` ); 
+                return; 
+            }
+
+            if (roomData.meta?.status !== "waiting") {
+                alert( "Esta partida ya comenzó y no permite nuevos jugadores." ); 
+                return; 
+            }
+
+            const currentPlayers = roomData.players || {};
+            const playerCount = Object.keys(currentPlayers).length;
+
+            if (playerCount >= 4) { 
+                alert( "La sala ya tiene el máximo de 4 jugadores." );
+                return; 
+            }
+            
+            currentRoomId = roomCode;
             localPlayer = new Player(user.uid, username, selectedColor);
             
-            // Sincronizar directo en la ruta de la sala ingresada
             await syncPlayerToRoom(currentRoomId, localPlayer);
 
             startSession();
 
         } catch (error) {
-            alert("Error al unirse a la sala. Verifica el código.");
+            console.error( "Error al unirse a la sala:", error );
+            alert( "No fue posible unirse a la sala. " + "Revisa el código e inténtalo nuevamente." );
         }
     });
 
@@ -120,9 +137,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // ==========================================
     // ESCUCHA Y SINCRONIZACIÓN EN TIEMPO REAL
-    // ==========================================
 
     function handleRoomUpdate(roomData) {
         const cloudPlayers = roomData.players || {};
@@ -185,6 +200,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (activeTurnUid === localPlayer.id) {
             currentTurnInfo.textContent = "¡Es tu turno! Lanza los dados.";
             if (btnRollDice) btnRollDice.disabled = false;
+            if (btnEndTurn) btnEndTurn.disabled = true;
         } else {
             const currentTurnName = cloudPlayers[activeTurnUid]?.name || "Otro jugador";
             currentTurnInfo.textContent = `Turno de: ${currentTurnName}`;
@@ -193,9 +209,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // ==========================================
     // ACCIONES DE JUEGO (EVENTOS LOCALES -> ENVIAR A LA NUBE)
-    // ==========================================
 
     btnRollDice?.addEventListener('click', async () => {
 
@@ -216,7 +230,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         try {
-            await updateDiceAndTurn(currentRoomId, [die1, die2], message);
+            await updateDiceResult(currentRoomId, [die1, die2], message);
             await syncPlayerToRoom(currentRoomId, localPlayer);
 
             // EVALUAR CASILLA DE ATERRIZAJE
@@ -235,7 +249,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     localPlayer.money -= rentCost;
 
                     const rentMessage = `${localPlayer.name} cayó en la propiedad de un rival y pagó $${rentCost} de alquiler.`;
-                    await updateDiceAndTurn(currentRoomId, [die1, die2], rentMessage);
+                    await updateDiceResult(currentRoomId, [die1, die2], rentMessage);
                     await syncPlayerToRoom(currentRoomId, localPlayer);
                 }
             }
@@ -246,7 +260,6 @@ document.addEventListener('DOMContentLoaded', () => {
             btnRollDice.disabled = false;
         }
     });
-
 
     // Acciones de los botones de la Ventana Flotante de Compra
     btnConfirmBuy?.addEventListener('click', async () => {
