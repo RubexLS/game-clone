@@ -175,3 +175,9 @@ body {
 .hidden {
     display: none !important;
 }
+
+#log-messages {
+    max-height: 180px;
+    overflow-y: auto;
+    overflow-x: hidden;
+}

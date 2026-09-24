@@ -1,7 +1,7 @@
 import { renderBoard } from './ui/render.js';
 import { Player, drawPlayerToken } from './core/player.js';
 import { loginAnonymously } from './services/auth.js';
-import { createGameRoom, syncPlayerToRoom, listenToRoom, updateDiceResult, buyPropertyInCloud, endTurnInCloud, getRoomSnapshot, payRentInCloud } from './services/network.js';
+import { createGameRoom, syncPlayerToRoom, listenToRoom, updateDiceResult, buyPropertyInCloud, endTurnInCloud, getRoomSnapshot, payRentInCloud, payTaxInCloud, setTurnStatus, sendPlayerToJailInCloud, payJailFineInCloud, useJailCardInCloud, registerJailAttemptInCloud } from './services/network.js';
 import { GameManager } from './core/game.js';
 import { getSquareById } from './core/board.js';
 
@@ -9,9 +9,10 @@ import { getSquareById } from './core/board.js';
 let localPlayer = null;
 let currentRoomId = null;
 let activePlayersList = {}; // Guarda las instancias locales de todos los jugadores de la sala
+let lastDisplayedAction = "";
 const gameManager = new GameManager(); // Instancia para manejar las reglas de compra
 // Variable temporal para recordar qué casilla estamos evaluando comprar
-    let currentLandingSquare = null;
+let currentLandingSquare = null;
 const btnEndTurn = document.getElementById('btn-end-turn');
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -41,6 +42,29 @@ document.addEventListener('DOMContentLoaded', () => {
     const modalPrice = document.getElementById('modal-property-price');
     const btnConfirmBuy = document.getElementById('btn-confirm-buy');
     const btnDeclineBuy = document.getElementById('btn-decline-buy');
+
+    const jailPanel = document.createElement('div');
+    jailPanel.id = 'jail-panel';
+    jailPanel.classList.add('hidden');
+    jailPanel.innerHTML = `
+        <div class="jail-title">
+            🚔 ESTÁS EN LA CÁRCEL
+        </div>
+
+        <div id="jail-status"></div>
+
+        <button id="btn-jail-pay">
+            💵 Pagar $50 y salir
+        </button>
+
+        <button id="btn-jail-card">
+            🎟️ Usar carta para salir
+        </button>
+    `;
+    gameContainer.appendChild(jailPanel);
+    const jailStatus = document.getElementById('jail-status');
+    const btnJailPay = document.getElementById('btn-jail-pay');
+    const btnJailCard = document.getElementById('btn-jail-card');
 
     // LÓGICA DE CONEXIÓN (LOBBY)
 
@@ -164,6 +188,8 @@ document.addEventListener('DOMContentLoaded', () => {
             activePlayersList[uid].position = pData.position;
             activePlayersList[uid].money = pData.money;
             activePlayersList[uid].isJailed = pData.isJailed;
+            activePlayersList[uid].jailTurns = pData.jailTurns || 0;
+            activePlayersList[uid].getOutOfJailFreeCards = pData.getOutOfJailFreeCards || 0;
 
             // Renderizar la tarjeta del jugador en el panel lateral izquierdo
             const playerCard = document.createElement('div');
@@ -187,11 +213,34 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // 3. Imprimir la última acción registrada en el historial
-        if (gameplay.lastAction) {
-            const log = document.createElement('p');
-            log.textContent = gameplay.lastAction;
-            logMessages.appendChild(log);
+        if (gameplay.lastAction && gameplay.lastAction !== lastDisplayedAction) {
+            const logEntry = document.createElement('div');
+
+            logEntry.textContent = gameplay.lastAction;
+            logMessages.appendChild(logEntry);
+            lastDisplayedAction = gameplay.lastAction;
+
+            // Mantener solamente las últimas 10 jugadas
+            while (logMessages.children.length > 10) {
+                logMessages.removeChild( logMessages.firstElementChild );
+            }
+
+            // Mantener visible la jugada más reciente
             logMessages.scrollTop = logMessages.scrollHeight;
+        }
+        
+        //opciones en la carcel
+        if ( localPlayer && localPlayer.isJailed && activeTurnUid === localPlayer.id ) {
+            jailPanel.classList.remove('hidden');
+            const attempts = localPlayer.jailTurns || 0;
+
+            jailStatus.textContent = `Intentos utilizados: ${attempts}/3. ` + `Puedes intentar sacar dobles.`;
+
+            btnJailPay.disabled = localPlayer.money < 50;
+            btnJailCard.disabled = (localPlayer.getOutOfJailFreeCards || 0) <= 0;
+
+        } else {
+            jailPanel.classList.add('hidden');
         }
 
         // 4. Gestión elemental del turno (Habilitar botones solo al jugador correspondiente)
@@ -232,6 +281,87 @@ document.addEventListener('DOMContentLoaded', () => {
         const total = die1 + die2;
 
         try {
+            if (localPlayer.isJailed) {
+
+                const doubles = die1 === die2;
+                // Intento actual
+                const currentAttempt = (localPlayer.jailTurns || 0) + 1;
+
+                if (doubles) {
+                    // Sacó dobles: sale de la cárcel
+                    localPlayer.isJailed = false;
+                    localPlayer.jailTurns = 0;
+
+                    const oldPosition = localPlayer.position;
+                    localPlayer.position = (oldPosition + total) % 40;
+                    const passedGo = localPlayer.position < oldPosition;
+
+                    if (passedGo) localPlayer.money += 200;
+
+                    const message = `${localPlayer.name} sacó dobles ` + `(${die1} y ${die2}) y salió de la cárcel. ` + `Avanzó a la casilla ${localPlayer.position}.`;
+
+                    await updateDiceResult(
+                        currentRoomId,
+                        [die1, die2],
+                        message
+                    );
+
+                    await syncPlayerToRoom(
+                        currentRoomId,
+                        localPlayer
+                    );
+
+                    await setTurnStatus(
+                        currentRoomId,
+                        "awaiting-end"
+                    );
+
+                    console.log( "El jugador salió de la cárcel mediante dobles." );
+                    return;
+                }
+
+                // No sacó dobles
+                if (currentAttempt < 3) {
+
+                    localPlayer.jailTurns = currentAttempt;
+
+                    const message = `${localPlayer.name} intentó salir ` + `de la cárcel (${currentAttempt}/3) ` + `y no sacó dobles.`;
+
+                    await registerJailAttemptInCloud(
+                        currentRoomId,
+                        localPlayer.id,
+                        currentAttempt,
+                        message
+                    );
+
+                    await setTurnStatus(
+                        currentRoomId,
+                        "awaiting-end"
+                    );
+
+                    return;
+                }
+
+                // Tercer intento sin dobles:
+                // deberá pagar $50.
+                localPlayer.jailTurns = 3;
+
+                const message = `${localPlayer.name} agotó sus 3 intentos ` + `sin sacar dobles. Debe pagar $50 para salir.`;
+
+                await registerJailAttemptInCloud(
+                    currentRoomId,
+                    localPlayer.id,
+                    3,
+                    message
+                );
+
+                await setTurnStatus(
+                    currentRoomId,
+                    "awaiting-end"
+                );
+
+                return;
+            }
 
             // Mover al jugador
             const passedGo = localPlayer.move(total);
@@ -266,8 +396,46 @@ document.addEventListener('DOMContentLoaded', () => {
 
             console.log( "Casilla de aterrizaje:", currentLandingSquare );
 
-            // Comprobar si puede comprar la propiedad y si pertenece a otro jugador se cobra alquiler
-            if ( gameManager.canBuyProperty( currentLandingSquare, localPlayer ) ) {
+            // situaciones al caer en una casilla
+            if (currentLandingSquare.type === "go-to-jail") {
+                const jailMessage = `${localPlayer.name} cayó en ` + `${currentLandingSquare.name} ` + `y fue enviado a la cárcel.`;
+
+                await sendPlayerToJailInCloud(
+                    currentRoomId,
+                    localPlayer.id,
+                    jailMessage
+                );
+
+                // Actualizamos también la instancia local
+                localPlayer.position = 10;
+                localPlayer.isJailed = true;
+
+                await setTurnStatus(
+                    currentRoomId,
+                    "awaiting-end"
+                );
+            } else if (currentLandingSquare.type === "tax") {
+                const taxAmount = currentLandingSquare.cost;
+                const taxMessage = `${localPlayer.name} pagó ` + `$${taxAmount} de impuesto ` + `por caer en ${currentLandingSquare.name}.`;
+
+                await payTaxInCloud(
+                    currentRoomId,
+                    localPlayer.id,
+                    taxAmount,
+                    taxMessage
+                );
+
+                await syncPlayerToRoom(
+                    currentRoomId,
+                    localPlayer
+                );
+
+                // El impuesto ya fue resuelto.y el jugador puede terminar su turno.
+                await setTurnStatus(
+                    currentRoomId,
+                    "awaiting-end"
+                );
+            } else if ( gameManager.canBuyProperty( currentLandingSquare, localPlayer ) ) {
                 modalPropertyName.textContent = currentLandingSquare.name;
                 modalPropertyPrice.textContent = `Precio: $${currentLandingSquare.price}`;
                 buyModal.classList.remove('hidden');
@@ -306,9 +474,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // 9. Después de resolver la casilla,
             //    permitir terminar el turno.
-            if (btnEndTurn) {
-                btnEndTurn.disabled = false;
-            }
+            // if (btnEndTurn) {
+            //     btnEndTurn.disabled = false;
+            // }
 
         } catch (error) {
 
@@ -374,6 +542,81 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (err) {
             console.error("Error al pasar el turno:", err);
             btnEndTurn.disabled = false;
+        }
+    });
+
+    btnJailPay?.addEventListener( 'click', async () => {
+        if (!localPlayer || !localPlayer.isJailed) return;
+
+        try {
+
+            await payJailFineInCloud(
+                currentRoomId,
+                localPlayer.id,
+                `${localPlayer.name} pagó $50 para salir de la cárcel.`
+            );
+
+            localPlayer.isJailed = false;
+            localPlayer.jailTurns = 0;
+
+            jailPanel.classList.add('hidden');
+
+            // Ahora puede lanzar los dados.
+            await setTurnStatus(
+                currentRoomId,
+                "waiting-roll"
+            );
+
+        } catch (error) {
+
+            console.error(
+                "Error al pagar la cárcel:",
+                error
+            );
+
+            alert(
+                "No se pudo pagar la multa de la cárcel."
+            );
+        }
+    });
+
+    btnJailCard?.addEventListener( 'click', async () => {
+        if (!localPlayer || !localPlayer.isJailed) return;
+
+        if ( (localPlayer.getOutOfJailFreeCards || 0) <= 0 ) {
+            alert( "No tienes una carta para salir de la cárcel." );
+            return;
+        }
+
+        try {
+
+            await useJailCardInCloud(
+                currentRoomId,
+                localPlayer.id,
+                `${localPlayer.name} utilizó una carta para salir de la cárcel.`
+            );
+
+            localPlayer.isJailed = false;
+            localPlayer.jailTurns = 0;
+            localPlayer.getOutOfJailFreeCards--;
+
+            jailPanel.classList.add('hidden');
+
+            await setTurnStatus(
+                currentRoomId,
+                "waiting-roll"
+            );
+
+        } catch (error) {
+
+            console.error(
+                "Error al usar la carta:",
+                error
+            );
+
+            alert(
+                "No se pudo utilizar la carta."
+            );
         }
     });
 });

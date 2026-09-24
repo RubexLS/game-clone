@@ -11,6 +11,8 @@ export class Player {
         this.money = 1500;       // Saldo inicial 
         this.position = 0;       // Todos empiezan en la casilla 0 (SALIDA)
         this.isJailed = false;   // Estado de prisión
+        this.jailTurns = 0;
+        this.getOutOfJailFreeCards = 0;
         this.properties = [];    // Array de IDs de casillas compradas
     }
 
