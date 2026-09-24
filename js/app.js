@@ -1,7 +1,7 @@
 import { renderBoard } from './ui/render.js';
 import { Player, drawPlayerToken } from './core/player.js';
 import { loginAnonymously } from './services/auth.js';
-import { createGameRoom, syncPlayerToRoom, listenToRoom, updateDiceResult, buyPropertyInCloud, endTurnInCloud, getRoomSnapshot } from './services/network.js';
+import { createGameRoom, syncPlayerToRoom, listenToRoom, updateDiceResult, buyPropertyInCloud, endTurnInCloud, getRoomSnapshot, payRentInCloud } from './services/network.js';
 import { GameManager } from './core/game.js';
 import { getSquareById } from './core/board.js';
 
@@ -32,6 +32,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const logMessages = document.getElementById('log-messages');
     const currentTurnInfo = document.getElementById('current-turn-info');
     const playersListUI = document.getElementById('players-list');
+    const modalPropertyName = document.getElementById('modal-property-name');
+    const modalPropertyPrice = document.getElementById('modal-property-price');
 
     // Captura de elementos de la nueva Ventana Modal (Añadir al inicio del DOMContentLoaded)
     const buyModal = document.getElementById('buy-property-modal');
@@ -197,13 +199,20 @@ document.addEventListener('DOMContentLoaded', () => {
         const playerUidsOrder = Object.keys(cloudPlayers);
         const activeTurnUid = playerUidsOrder[gameplay.currentTurnIndex];
 
-        if (activeTurnUid === localPlayer.id) {
+        if (activeTurnUid === localPlayer.id && gameplay.turnStatus === "waiting-roll") {
             currentTurnInfo.textContent = "¡Es tu turno! Lanza los dados.";
             if (btnRollDice) btnRollDice.disabled = false;
             if (btnEndTurn) btnEndTurn.disabled = true;
+        } else if (activeTurnUid === localPlayer.id && gameplay.turnStatus === "awaiting-end") {
+            currentTurnInfo.textContent = "Turno en curso. Termina tu turno.";
+
+            if (btnRollDice) btnRollDice.disabled = true;
+            if (btnEndTurn) btnEndTurn.disabled = false;
         } else {
+
             const currentTurnName = cloudPlayers[activeTurnUid]?.name || "Otro jugador";
             currentTurnInfo.textContent = `Turno de: ${currentTurnName}`;
+
             if (btnRollDice) btnRollDice.disabled = true;
             if (btnEndTurn) btnEndTurn.disabled = true;
         }
@@ -213,52 +222,109 @@ document.addEventListener('DOMContentLoaded', () => {
 
     btnRollDice?.addEventListener('click', async () => {
 
-        // Bloquear el botón temporalmente para evitar doble clic accidental
+        if (!localPlayer || !currentRoomId) return;
+
+        // Evitar múltiples lanzamientos mientras se procesa el turno
         btnRollDice.disabled = true;
 
         const die1 = Math.floor(Math.random() * 6) + 1;
         const die2 = Math.floor(Math.random() * 6) + 1;
         const total = die1 + die2;
 
-        // Mover la lógica del jugador local de manera interna
-        const passedGo = localPlayer.move(total);
-
-        // Armar el mensaje de historial
-        let message = `${localPlayer.name} sacó ${total} y avanzó a la casilla ${localPlayer.position}.`;
-        if (passedGo) {
-            message += " ¡Pasó por SALIDA y cobró \$200!";
-        }
-
         try {
-            await updateDiceResult(currentRoomId, [die1, die2], message);
-            await syncPlayerToRoom(currentRoomId, localPlayer);
 
-            // EVALUAR CASILLA DE ATERRIZAJE
+            // Mover al jugador
+            const passedGo = localPlayer.move(total);
+            let message = `${localPlayer.name} sacó ${die1} y ${die2} ` + `(${total}) y avanzó a la casilla ${localPlayer.position}.`;
+
+            // Informar si pasó por SALIDA
+            if (passedGo) {
+                message += " ¡Pasó por SALIDA y cobró $200!";
+            }
+
+            // Obtener la casilla donde aterrizó
             currentLandingSquare = getSquareById(localPlayer.position);
 
-            // Si la propiedad está libre y tenemos dinero, abrimos la ventana de compra
-            if (gameManager.canBuyProperty(currentLandingSquare, localPlayer)) {
-                modalName.textContent = currentLandingSquare.name;
-                modalPrice.textContent = `Precio: $${currentLandingSquare.price}`;
-                buyModal.classList.remove('hidden');
-            } else if (gameManager.propertiesState[currentLandingSquare.id]) {
-                // Lógica básica de Alquiler: Si ya tiene dueño y no somos nosotros
-                const propertyInfo = gameManager.propertiesState[currentLandingSquare.id];
-                if (propertyInfo.ownerId !== localPlayer.id) {
-                    const rentCost = gameManager.calculateRent(currentLandingSquare);
-                    localPlayer.money -= rentCost;
+            if (!currentLandingSquare) {
+                throw new Error(
+                    `No se encontró la casilla ${localPlayer.position}.`
+                );
+            }
 
-                    const rentMessage = `${localPlayer.name} cayó en la propiedad de un rival y pagó $${rentCost} de alquiler.`;
-                    await updateDiceResult(currentRoomId, [die1, die2], rentMessage);
-                    await syncPlayerToRoom(currentRoomId, localPlayer);
+            // Guardar dados y movimiento en Firebase
+            await updateDiceResult(
+                currentRoomId,
+                [die1, die2],
+                message
+            );
+
+            // Sincronizar jugador
+            await syncPlayerToRoom(
+                currentRoomId,
+                localPlayer
+            );
+
+            console.log( "Casilla de aterrizaje:", currentLandingSquare );
+
+            // Comprobar si puede comprar la propiedad y si pertenece a otro jugador se cobra alquiler
+            if ( gameManager.canBuyProperty( currentLandingSquare, localPlayer ) ) {
+                modalPropertyName.textContent = currentLandingSquare.name;
+                modalPropertyPrice.textContent = `Precio: $${currentLandingSquare.price}`;
+                buyModal.classList.remove('hidden');
+            } else if ( gameManager.propertiesState[ currentLandingSquare.id ] ) {
+                const propertyInfo =
+                    gameManager.propertiesState[
+                        currentLandingSquare.id
+                    ];
+
+                // No pagar alquiler al propio propietario
+                if ( propertyInfo.ownerId !== localPlayer.id ) {
+
+                    const propertyInfo = gameManager.propertiesState[ currentLandingSquare.id ];
+
+                    // El propietario no paga alquiler a sí mismo
+                    if ( propertyInfo.ownerId !== localPlayer.id ) {
+
+                        const rentCost = gameManager.calculateRent( currentLandingSquare );
+                        const ownerId = propertyInfo.ownerId;
+                        const rentMessage =
+                            `${localPlayer.name} pagó ` +
+                            `$${rentCost} de alquiler a ` +
+                            `${ownerId} por ` +
+                            `${currentLandingSquare.name}.`;
+
+                        await payRentInCloud(
+                            currentRoomId,
+                            localPlayer.id,
+                            ownerId,
+                            rentCost,
+                            rentMessage
+                        );
+                    }
                 }
             }
-            const btnEndTurn = document.getElementById('btn-end-turn');
-            if (btnEndTurn) btnEndTurn.disabled = false;
-        } catch (err) {
-            console.error("Error al actualizar la jugada:", err);
+
+            // 9. Después de resolver la casilla,
+            //    permitir terminar el turno.
+            if (btnEndTurn) {
+                btnEndTurn.disabled = false;
+            }
+
+        } catch (error) {
+
+            console.error(
+                "Error durante el lanzamiento:",
+                error
+            );
+
+            // Si ocurrió un error, permitir intentar nuevamente
             btnRollDice.disabled = false;
+
+            alert(
+                "Ocurrió un error durante el turno."
+            );
         }
+
     });
 
     // Acciones de los botones de la Ventana Flotante de Compra
