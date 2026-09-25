@@ -4,6 +4,7 @@ import { loginAnonymously } from './services/auth.js';
 import { createGameRoom, syncPlayerToRoom, listenToRoom, updateDiceResult, buyPropertyInCloud, endTurnInCloud, getRoomSnapshot, payRentInCloud, payTaxInCloud, setTurnStatus, sendPlayerToJailInCloud, payJailFineInCloud, useJailCardInCloud, registerJailAttemptInCloud } from './services/network.js';
 import { GameManager } from './core/game.js';
 import { getSquareById } from './core/board.js';
+import { CHANCE_CARDS, COMMUNITY_CHEST_CARDS, CardDeck, applyBasicCardEffect } from './core/cards.js';
 
 // Variables globales para la sesión del jugador local
 let localPlayer = null;
@@ -11,9 +12,17 @@ let currentRoomId = null;
 let activePlayersList = {}; // Guarda las instancias locales de todos los jugadores de la sala
 let lastDisplayedAction = "";
 const gameManager = new GameManager(); // Instancia para manejar las reglas de compra
+const chanceDeck = new CardDeck(CHANCE_CARDS);
+const communityChestDeck = new CardDeck(COMMUNITY_CHEST_CARDS);
 // Variable temporal para recordar qué casilla estamos evaluando comprar
 let currentLandingSquare = null;
 const btnEndTurn = document.getElementById('btn-end-turn');
+
+function drawCardForSquare(square) {
+    if (square.type === "chance") return chanceDeck.drawCard();
+    if (square.type === "community-chest") return communityChestDeck.drawCard();
+    return null;
+}
 
 document.addEventListener('DOMContentLoaded', () => {
     console.log("Inicializando Motor Multijugador de Monopoly...");
@@ -65,6 +74,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const jailStatus = document.getElementById('jail-status');
     const btnJailPay = document.getElementById('btn-jail-pay');
     const btnJailCard = document.getElementById('btn-jail-card');
+
+    const cardModal = document.getElementById('card-modal');
+    const cardModalTitle = document.getElementById('card-modal-title');
+    const cardModalText = document.getElementById('card-modal-text');
+    const btnAcceptCard = document.getElementById('btn-accept-card');
+    let currentCard = null;
 
     // LÓGICA DE CONEXIÓN (LOBBY)
 
@@ -204,6 +219,11 @@ document.addEventListener('DOMContentLoaded', () => {
             drawPlayerToken(activePlayersList[uid]);
         });
 
+        // Gestión elemental del turno (Habilitar botones solo al jugador correspondiente)
+        const btnEndTurn = document.getElementById('btn-end-turn');
+        const playerUidsOrder = Object.keys(cloudPlayers);
+        const activeTurnUid = playerUidsOrder[gameplay.currentTurnIndex];
+
         // 2. Sincronizar visualmente los dados si cambiaron en la base de datos
         if (gameplay.dice && gameplay.dice.length === 2) {
             const total = gameplay.dice[0] + gameplay.dice[1];
@@ -235,18 +255,15 @@ document.addEventListener('DOMContentLoaded', () => {
             const attempts = localPlayer.jailTurns || 0;
 
             jailStatus.textContent = `Intentos utilizados: ${attempts}/3. ` + `Puedes intentar sacar dobles.`;
-
             btnJailPay.disabled = localPlayer.money < 50;
-            btnJailCard.disabled = (localPlayer.getOutOfJailFreeCards || 0) <= 0;
+            //btnJailCard.disabled = (localPlayer.getOutOfJailFreeCards || 0) <= 0;
+            if (btnJailCard) {
+                btnJailCard.disabled = (localPlayer.getOutOfJailFreeCards || 0) <= 0;
+            }
 
         } else {
             jailPanel.classList.add('hidden');
         }
-
-        // 4. Gestión elemental del turno (Habilitar botones solo al jugador correspondiente)
-        const btnEndTurn = document.getElementById('btn-end-turn');
-        const playerUidsOrder = Object.keys(cloudPlayers);
-        const activeTurnUid = playerUidsOrder[gameplay.currentTurnIndex];
 
         if (activeTurnUid === localPlayer.id && gameplay.turnStatus === "waiting-roll") {
             currentTurnInfo.textContent = "¡Es tu turno! Lanza los dados.";
@@ -379,6 +396,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 throw new Error(
                     `No se encontró la casilla ${localPlayer.position}.`
                 );
+            }
+
+            if ( currentLandingSquare.type === "chance" || currentLandingSquare.type === "community-chest" ) {
+                currentCard = drawCardForSquare(currentLandingSquare);
+
+                if (currentCard) {
+                    const cardTitle = currentLandingSquare.type === "chance" ? "🎴 SUERTE" : "🎁 CAJA DE COMUNIDAD";
+                    cardModalTitle.textContent = cardTitle;
+                    cardModalText.textContent = currentCard.text;
+                    cardModal.classList.remove('hidden');
+                }
             }
 
             // Guardar dados y movimiento en Firebase
@@ -617,6 +645,42 @@ document.addEventListener('DOMContentLoaded', () => {
             alert(
                 "No se pudo utilizar la carta."
             );
+        }
+    });
+
+    btnAcceptCard?.addEventListener('click', async () => {
+        if (!currentCard || !localPlayer || !currentRoomId) {
+            cardModal.classList.add('hidden');
+            return;
+        }
+
+        try {
+            const card = currentCard;
+
+            // Aplicamos el efecto localmente
+            const message = applyBasicCardEffect(card, localPlayer);
+
+            // Cerramos la carta
+            currentCard = null;
+            cardModal.classList.add('hidden');
+
+            // Si la carta tiene un efecto básico
+            if (message) {
+                await syncPlayerToRoom(currentRoomId, localPlayer);
+
+                await updateDiceResult(
+                    currentRoomId,
+                    [0, 0],
+                    message
+                );
+            }
+            drawPlayerToken(localPlayer);
+
+        } catch (error) {
+            console.error("Error al aplicar carta:", error);
+            alert(error.message);
+            cardModal.classList.add('hidden');
+            currentCard = null;
         }
     });
 });

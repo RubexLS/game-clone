@@ -154,3 +154,53 @@
     width: 100%;
     margin-top: 6px;
 }
+
+/* modal de cartas */
+
+#card-modal {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.65);
+    z-index: 1000;
+}
+
+#card-modal.hidden {
+    display: none;
+}
+
+.card-modal-content {
+    width: min(90%, 420px);
+    padding: 25px;
+    border-radius: 16px;
+    text-align: center;
+    background: #fff;
+    border: 4px solid #222;
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.35);
+}
+
+.card-modal-title {
+    font-size: 24px;
+    font-weight: bold;
+    margin-bottom: 20px;
+}
+
+.card-modal-text {
+    min-height: 80px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    line-height: 1.5;
+    margin-bottom: 20px;
+}
+
+#btn-accept-card {
+    width: 100%;
+    padding: 12px;
+    font-size: 16px;
+    font-weight: bold;
+    cursor: pointer;
+}
