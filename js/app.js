@@ -4,7 +4,7 @@ import { loginAnonymously } from './services/auth.js';
 import { createGameRoom, syncPlayerToRoom, listenToRoom, updateDiceResult, buyPropertyInCloud, endTurnInCloud, getRoomSnapshot, payRentInCloud, payTaxInCloud, setTurnStatus, sendPlayerToJailInCloud, payJailFineInCloud, useJailCardInCloud, registerJailAttemptInCloud } from './services/network.js';
 import { GameManager } from './core/game.js';
 import { getSquareById } from './core/board.js';
-import { CHANCE_CARDS, COMMUNITY_CHEST_CARDS, CardDeck, applyBasicCardEffect } from './core/cards.js';
+import { CHANCE_CARDS, COMMUNITY_CHEST_CARDS, CardDeck, applyBasicCardEffect, applyPlayerInteractionCardEffect, applySpecialCardEffect } from './core/cards.js';
 
 // Variables globales para la sesión del jugador local
 let localPlayer = null;
@@ -656,29 +656,101 @@ document.addEventListener('DOMContentLoaded', () => {
 
         try {
             const card = currentCard;
+            let message = null;
+            let cardDice = [0, 0];
 
-            // Aplicamos el efecto localmente
-            const message = applyBasicCardEffect(card, localPlayer);
+            // Cartas que afectan únicamente al jugador actual
+            const basicCardTypes = [
+                "receive_money",
+                "pay_money",
+                "move_back",
+                "move_to",
+                "go_to_jail",
+                "get_out_of_jail_free"
+            ];
 
-            // Cerramos la carta
+            if (basicCardTypes.includes(card.type)) {
+
+                message = applyBasicCardEffect(
+                    card,
+                    localPlayer
+                );
+
+                await syncPlayerToRoom(
+                    currentRoomId,
+                    localPlayer
+                );
+            } else if ( card.type === "pay_each_player" || card.type === "receive_from_each_player" ) {
+
+                const result = applyPlayerInteractionCardEffect( card, localPlayer, activePlayersList );
+                message = result;
+
+                // Sincronizamos a todos los jugadores
+                for (const player of Object.values(activePlayersList)) {
+                    await syncPlayerToRoom(
+                        currentRoomId,
+                        player
+                    );
+                }
+            } else if (card.type === "nearest_railroad") {
+
+                const result = applySpecialCardEffect( card, localPlayer, activePlayersList );
+                message = result.message;
+            
+                // Sincronizamos la posición y el dinero del jugador.
+                await syncPlayerToRoom(
+                    currentRoomId,
+                    localPlayer
+                );
+            
+                // Si hubo propietario, también sincronizamos su dinero.
+                if (result.owner) {
+                    await syncPlayerToRoom(
+                        currentRoomId,
+                        result.owner
+                    );
+                }
+            } else if (card.type === "nearest_utility") {
+
+                const result = applySpecialCardEffect( card, localPlayer, activePlayersList );
+                if (result.dice) cardDice = result.dice;
+                message = result.message;
+            
+                await syncPlayerToRoom(
+                    currentRoomId,
+                    localPlayer
+                );
+            
+                if (result.owner) {
+                    await syncPlayerToRoom(
+                        currentRoomId,
+                        result.owner
+                    );
+                }
+            }
+
             currentCard = null;
             cardModal.classList.add('hidden');
 
-            // Si la carta tiene un efecto básico
             if (message) {
-                await syncPlayerToRoom(currentRoomId, localPlayer);
-
                 await updateDiceResult(
                     currentRoomId,
-                    [0, 0],
+                    cardDice,
                     message
                 );
             }
+
             drawPlayerToken(localPlayer);
 
         } catch (error) {
-            console.error("Error al aplicar carta:", error);
+
+            console.error(
+                "Error al aplicar carta:",
+                error
+            );
+
             alert(error.message);
+
             cardModal.classList.add('hidden');
             currentCard = null;
         }

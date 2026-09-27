@@ -110,6 +110,236 @@ export function applyBasicCardEffect(card, player) {
             player.getOutOfJailFreeCards = (player.getOutOfJailFreeCards || 0) + 1;
             return `${player.name} obtuvo una carta para salir de la cárcel.`;
 
+        case "nearest_railroad": {
+            const railroad = findNearestSquare( player.position, "railroad" );
+        
+            if (!railroad) {
+                throw new Error(
+                    "No se encontró ningún ferrocarril."
+                );
+            }
+            player.position = railroad.id;
+            return `${player.name} avanzó hasta ${railroad.name}.`;
+        }
+
+        case "nearest_utility": {
+            const utility = findNearestSquare( player.position, "utility" );
+        
+            if (!utility) {
+                throw new Error(
+                    "No se encontró ningún servicio público."
+                );
+            }
+            player.position = utility.id;
+            return `${player.name} avanzó hasta ${utility.name}.`;
+        }
+
+        default:
+            return null;
+    }
+}
+
+export function applyPlayerInteractionCardEffect( card, player, allPlayers ) {
+    switch (card.type) {
+
+        case "pay_each_player": {
+            const otherPlayers = Object.values(allPlayers).filter(otherPlayer => otherPlayer.id !== player.id);
+            const totalPayment = card.amount * otherPlayers.length;
+
+            if (player.money < totalPayment) {
+                throw new Error(
+                    `${player.name} no tiene suficiente dinero para pagar $${totalPayment}.`
+                );
+            }
+
+            player.money -= totalPayment;
+
+            otherPlayers.forEach(otherPlayer => {
+                otherPlayer.money += card.amount;
+            });
+
+            return `${player.name} pagó $${card.amount} a cada jugador.`;
+        }
+
+        case "receive_from_each_player": {
+            const otherPlayers = Object.values(allPlayers).filter(otherPlayer => otherPlayer.id !== player.id);
+            const totalReceived = card.amount * otherPlayers.length;
+
+            otherPlayers.forEach(otherPlayer => {
+                if (otherPlayer.money >= card.amount) {
+                    otherPlayer.money -= card.amount;
+                } else {
+                    throw new Error(
+                        `${otherPlayer.name} no tiene suficiente dinero para pagar $${card.amount}.`
+                    );
+                }
+            });
+
+            player.money += totalReceived;
+
+            return `${player.name} recibió $${card.amount} de cada jugador.`;
+        }
+
+        default:
+            return null;
+    }
+}
+
+function findNearestSquare(playerPosition, type) {
+    const squares = [];
+
+    for (let i = 0; i < 40; i++) {
+        const square = getSquareById(i);
+        if (square && square.type === type) squares.push(square);
+    }
+
+    if (squares.length === 0) return null;
+
+    // Calcula la distancia avanzando por el tablero
+    let nearestSquare = null;
+    let shortestDistance = 40;
+
+    for (const square of squares) {
+        const distance = (square.id - playerPosition + 40) % 40;
+
+        // Si está exactamente en la misma casilla, busca la siguiente vuelta.
+        const adjustedDistance = distance === 0 ? 40 : distance;
+
+        if (adjustedDistance < shortestDistance) {
+            shortestDistance = adjustedDistance;
+            nearestSquare = square;
+        }
+    }
+    return nearestSquare;
+}
+
+function findPropertyOwner(squareId, allPlayers) {
+    for (const player of Object.values(allPlayers)) {
+        if (player.properties?.includes(squareId)) return player;
+    }
+
+    return null;
+}
+
+export function applySpecialCardEffect( card, player, allPlayers ) {
+    switch (card.type) {
+
+        case "nearest_railroad": {
+            const railroad = findNearestSquare( player.position, "railroad" );
+
+            if (!railroad) {
+                throw new Error(
+                    "No se encontró ningún ferrocarril."
+                );
+            }
+
+            player.position = railroad.id;
+            const owner = findPropertyOwner( railroad.id, allPlayers );
+
+            // El jugador llegó a un ferrocarril sin dueño.
+            if (!owner) {
+                return {
+                    message:
+                        `${player.name} avanzó hasta ${railroad.name}. El ferrocarril no tiene dueño.`,
+                    needsPurchase: true,
+                    square: railroad
+                };
+            }
+
+            // El jugador llegó a su propio ferrocarril.
+            if (owner.id === player.id) {
+                return {
+                    message:
+                        `${player.name} avanzó hasta ${railroad.name}, que ya es de su propiedad.`,
+                    needsPurchase: false,
+                    rentToPay: 0,
+                    square: railroad
+                };
+            }
+
+            // El ferrocarril tiene otro propietario.
+            const baseRent = railroad.rent?.[0] || 25;
+            const doubleRent = baseRent * 2;
+
+            if (player.money < doubleRent) {
+                throw new Error(
+                    `${player.name} no tiene suficiente dinero para pagar $${doubleRent}.`
+                );
+            }
+
+            player.money -= doubleRent;
+            owner.money += doubleRent;
+
+            return {
+                message:
+                    `${player.name} pagó $${doubleRent} a ${owner.name} por caer en ${railroad.name}.`,
+                needsPurchase: false,
+                rentToPay: doubleRent,
+                square: railroad,
+                owner
+            };
+        }
+
+        case "nearest_utility": {
+            const utility = findNearestSquare( player.position, "utility" );
+        
+            if (!utility) {
+                throw new Error(
+                    "No se encontró ningún servicio público."
+                );
+            }
+        
+            player.position = utility.id;
+            const owner = findPropertyOwner( utility.id, allPlayers );
+        
+            // Servicio público sin dueño
+            if (!owner) {
+                return {
+                    message:
+                        `${player.name} avanzó hasta ${utility.name}. El servicio público no tiene dueño.`,
+                    needsPurchase: true,
+                    square: utility
+                };
+            }
+        
+            // El jugador llegó a su propio servicio público
+            if (owner.id === player.id) {
+                return {
+                    message:
+                        `${player.name} avanzó hasta ${utility.name}, que ya es de su propiedad.`,
+                    needsPurchase: false,
+                    rentToPay: 0,
+                    square: utility
+                };
+            }
+        
+            // Servicio público propiedad de otro jugador
+            const die1 = Math.floor(Math.random() * 6) + 1;
+            const die2 = Math.floor(Math.random() * 6) + 1;
+            const total = die1 + die2;
+        
+            const payment = total * 10;
+        
+            if (player.money < payment) {
+                throw new Error(
+                    `${player.name} no tiene suficiente dinero para pagar $${payment}.`
+                );
+            }
+        
+            player.money -= payment;
+            owner.money += payment;
+        
+            return {
+                message:
+                    `${player.name} avanzó hasta ${utility.name}, sacó ${die1} y ${die2} (${total}) y pagó $${payment} a ${owner.name}.`,
+                needsPurchase: false,
+                rentToPay: payment,
+                dice: [die1, die2],
+                square: utility,
+                owner
+            };
+        }
+
         default:
             return null;
     }
