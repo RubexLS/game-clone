@@ -79,6 +79,31 @@ export function applyBasicCardEffect(card, player) {
             player.money -= card.amount;
             return `${player.name} pagó $${card.amount}.`;
 
+        case "property_tax": {
+            let totalCost = 0;
+                
+            for (const propertyId of player.properties || []) {
+                const buildings = player.propertyBuildings?.[propertyId];
+            
+                if (!buildings) continue;
+            
+                const houses = buildings.houses || 0;
+                const hotel = buildings.hotel ? 1 : 0;
+            
+                totalCost += houses * card.houseCost;
+                totalCost += hotel * card.hotelCost;
+            }
+        
+            if (player.money < totalCost) {
+                throw new Error(
+                    `${player.name} no tiene suficiente dinero para pagar las reparaciones ($${totalCost}).`
+                );
+            }
+        
+            player.money -= totalCost;
+        
+            return `${player.name} pagó $${totalCost} por reparaciones de sus propiedades.`;
+        }
 
         case "move_back": {
             const oldPosition = player.position;

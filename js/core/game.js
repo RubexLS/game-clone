@@ -38,4 +38,107 @@ export class GameManager {
         }
         return 0;
     }
+
+    calculatePropertyRepairCost(player, houseCost, hotelCost) {
+        let totalCost = 0;
+
+        for (const propertyId of player.properties || []) {
+            const buildings = player.propertyBuildings?.[propertyId];
+
+            if (!buildings) continue;
+
+            const houses = buildings.houses || 0;
+            const hotel = buildings.hotel ? 1 : 0;
+
+            totalCost += houses * houseCost;
+            totalCost += hotel * hotelCost;
+        }
+        return totalCost;
+    }
+
+    canBuildOnProperty(player, propertyId) {
+        // El jugador debe ser dueño de la propiedad
+        if (!(player.properties || []).includes(propertyId)) {
+            return { allowed: false, message: "No eres dueño de esta propiedad." };
+        }
+    
+        const buildings = player.propertyBuildings?.[propertyId] || {
+            houses: 0,
+            hotel: false
+        };
+    
+        // Si ya tiene hotel, no puede seguir construyendo
+        if (buildings.hotel) {
+            return { allowed: false,  message: "Esta propiedad ya tiene un hotel." };
+        }
+    
+        // Máximo de 4 casas antes del hotel
+        if ((buildings.houses || 0) >= 4) {
+            return { allowed: false, message: "Esta propiedad tiene 4 casas. Puede convertirse en hotel." };
+        }
+    
+        return { allowed: true, buildings };
+    }
+
+    buildHouse(player, propertyId, houseCost) {
+        const validation = this.canBuildOnProperty(player, propertyId);
+
+        if (!validation.allowed) {
+            return { success: false, message: validation.message };
+        }
+
+        if (player.money < houseCost) {
+            return { success: false, message: `${player.name} no tiene suficiente dinero para construir una casa.` }
+
+        if (!player.propertyBuildings) player.propertyBuildings = {}; }
+
+        if (!player.propertyBuildings[propertyId]) {
+            player.propertyBuildings[propertyId] = {
+                houses: 0,
+                hotel: false
+            };
+        }
+
+        player.money -= houseCost;
+        player.propertyBuildings[propertyId].houses += 1;
+
+        const houses = player.propertyBuildings[propertyId].houses;
+
+        return {
+            success: true,
+            message: `${player.name} construyó una casa. Ahora tiene ${houses} casa${houses === 1 ? '' : 's'} en esta propiedad.`,
+            houses
+        };
+    }
+
+    buildHotel(player, propertyId, hotelCost) {
+    const buildings = player.propertyBuildings?.[propertyId];
+
+    if (!buildings) {
+        return { success: false, message: "Esta propiedad no tiene casas construidas." };
+    }
+
+    if (buildings.hotel) {
+        return { success: false, message: "Esta propiedad ya tiene un hotel." };
+    }
+
+    if ((buildings.houses || 0) < 4) {
+        return { success: false, message: "Necesitas 4 casas para construir un hotel." };
+    }
+
+    if (player.money < hotelCost) {
+        return { success: false, message: `${player.name} no tiene suficiente dinero para construir un hotel.` };
+    }
+
+    player.money -= hotelCost;
+
+    buildings.houses = 0;
+    buildings.hotel = true;
+
+    return {
+        success: true,
+        message: `${player.name} construyó un hotel en esta propiedad.`,
+        hotel: true
+    };
+}
 }

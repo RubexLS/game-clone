@@ -14,6 +14,7 @@ export class Player {
         this.jailTurns = 0;
         this.getOutOfJailFreeCards = 0;
         this.properties = [];    // Array de IDs de casillas compradas
+        this.propertyBuildings = {};
     }
 
     /**

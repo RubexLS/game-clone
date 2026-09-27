@@ -205,6 +205,8 @@ document.addEventListener('DOMContentLoaded', () => {
             activePlayersList[uid].isJailed = pData.isJailed;
             activePlayersList[uid].jailTurns = pData.jailTurns || 0;
             activePlayersList[uid].getOutOfJailFreeCards = pData.getOutOfJailFreeCards || 0;
+            activePlayersList[uid].properties = pData.properties || [];
+            activePlayersList[uid].propertyBuildings = pData.propertyBuildings || {};
 
             // Renderizar la tarjeta del jugador en el panel lateral izquierdo
             const playerCard = document.createElement('div');
