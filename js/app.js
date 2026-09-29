@@ -51,6 +51,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const modalPrice = document.getElementById('modal-property-price');
     const btnConfirmBuy = document.getElementById('btn-confirm-buy');
     const btnDeclineBuy = document.getElementById('btn-decline-buy');
+    const btnBuildHouse = document.getElementById('btn-build-house');
+    const btnBuildHotel = document.getElementById('btn-build-hotel');
 
     const jailPanel = document.createElement('div');
     jailPanel.id = 'jail-panel';
@@ -96,23 +98,37 @@ document.addEventListener('DOMContentLoaded', () => {
 
         try {
             // Autenticación anónima en Firebase
+            console.log("1. Iniciando autenticación...");
             const user = await loginAnonymously();
+            console.log("2. Autenticación correcta:", user.uid);
             currentRoomId = roomCode;
 
             // Inicializar la sala en Realtime Database
+            console.log("3. Creando sala:", currentRoomId);
             await createGameRoom(currentRoomId, user.uid);
 
             // Crear el objeto del jugador local
+            console.log("4. Sala creada correctamente");
             localPlayer = new Player(user.uid, username, selectedColor);
 
             // Guardar al jugador dentro de la sala en Firebase
+            console.log("5. Jugador creado:", localPlayer);
             await syncPlayerToRoom(currentRoomId, localPlayer);
 
             // Cambiar de pantalla e iniciar el tablero
+            console.log("6. Jugador sincronizado correctamente");
             startSession();
-
+            console.log("7. Sesión iniciada correctamente");
         } catch (error) {
-            alert("Error al crear la sala de juego. Revisa la consola.");
+            console.error(
+                "ERROR REAL AL CREAR LA SALA:",
+                error
+            );
+        
+            alert(
+                "Error al crear la sala: " +
+                (error?.message || error)
+            );
         }
     });
 
@@ -213,12 +229,13 @@ document.addEventListener('DOMContentLoaded', () => {
             playerCard.style.borderLeft = `5px solid ${pData.color}`;
             playerCard.style.padding = "5px";
             playerCard.style.marginBottom = "5px";
-            playerCard.style.backgroundColor = "#2c3e50";
+            playerCard.style.backgroundColor = "#aec1d4";
             playerCard.innerHTML = `<strong>${pData.name}</strong>: $${pData.money} (Casilla ${pData.position})`;
             playersListUI.appendChild(playerCard);
 
             // Dibujar la ficha en la casilla correspondiente del tablero
             drawPlayerToken(activePlayersList[uid]);
+            renderPropertyBuildings();
         });
 
         // Gestión elemental del turno (Habilitar botones solo al jugador correspondiente)
@@ -283,6 +300,80 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (btnRollDice) btnRollDice.disabled = true;
             if (btnEndTurn) btnEndTurn.disabled = true;
+        }
+    }
+
+    function updatePropertyActionButtons() {
+        if (!currentLandingSquare || !localPlayer) return;
+
+        // Ocultar todo inicialmente
+        btnConfirmBuy?.classList.add('hidden');
+        btnDeclineBuy?.classList.add('hidden');
+        btnBuildHouse?.classList.add('hidden');
+        btnBuildHotel?.classList.add('hidden');
+
+        if (!currentLandingSquare || !localPlayer) return;
+
+        const propertyId = currentLandingSquare.id;
+        const propertyInfo = gameManager.propertiesState[propertyId];
+
+        // Propiedad libre → mostrar compra
+        if (!propertyInfo) {
+            if (gameManager.canBuyProperty(currentLandingSquare, localPlayer)) {
+                btnConfirmBuy?.classList.remove('hidden');
+                btnDeclineBuy?.classList.remove('hidden');
+            }
+            return;
+        }
+
+        // Propiedad de otro jugador → no mostrar acciones
+        if (propertyInfo.ownerId !== localPlayer.id) return;
+
+        // Propiedad propia
+        const buildings =
+            localPlayer.propertyBuildings?.[propertyId] || {
+                houses: 0,
+                hotel: false
+            };
+
+        // Hotel → no se puede seguir construyendo
+        if (buildings.hotel) return;
+
+        // 4 casas → opción de hotel
+        if ((buildings.houses || 0) >= 4) {
+            btnBuildHotel.textContent = `🏨 Construir hotel — $${currentLandingSquare.hotelCost}`;
+            btnBuildHotel?.classList.remove('hidden');
+            return;
+        }
+
+        // 0–3 casas → opción de construir casa
+        btnBuildHouse.textContent = `🏠 Construir casa — $${currentLandingSquare.houseCost}`;
+        btnBuildHouse?.classList.remove('hidden');
+    }
+
+    function renderPropertyBuildings() {
+        // elimina indicadores anteriores
+        document.querySelectorAll('.property-buildings').forEach(element => {
+            element.remove();
+        });
+
+        for (const player of Object.values(activePlayersList)) {
+            for (const [propertyId, buildings] of Object.entries(player.propertyBuildings || {})) {
+                const propertySquare = document.querySelector( `[data-square-id="${propertyId}"]` );
+
+                if (!propertySquare) continue;
+
+                const container = document.createElement('div');
+                container.className = 'property-buildings';
+
+                if (buildings.hotel) {
+                    container.textContent = '🏨';
+                } else if (buildings.houses > 0) {
+                    container.textContent = '🏠'.repeat(buildings.houses);
+                }
+
+                propertySquare.appendChild(container);
+            }
         }
     }
 
@@ -400,6 +491,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 );
             }
 
+            const propertyInfo = gameManager.propertiesState[currentLandingSquare.id];
+            const isOwnProperty = propertyInfo && propertyInfo.ownerId === localPlayer.id;
+            const buildValidation = currentLandingSquare.type === 'property' ? 
+                gameManager.canBuildOnProperty(
+                    localPlayer,
+                    currentLandingSquare.id
+                ) : { allowed: false };
+            const isBuildable = currentLandingSquare.type === 'property' && isOwnProperty && buildValidation.allowed;
+
             if ( currentLandingSquare.type === "chance" || currentLandingSquare.type === "community-chest" ) {
                 currentCard = drawCardForSquare(currentLandingSquare);
 
@@ -466,9 +566,33 @@ document.addEventListener('DOMContentLoaded', () => {
                     "awaiting-end"
                 );
             } else if ( gameManager.canBuyProperty( currentLandingSquare, localPlayer ) ) {
-                modalPropertyName.textContent = currentLandingSquare.name;
-                modalPropertyPrice.textContent = `Precio: $${currentLandingSquare.price}`;
+                modalName.textContent = currentLandingSquare.name;
+                modalPrice.textContent = `Precio: $${currentLandingSquare.price}`;
+                updatePropertyActionButtons();
                 buyModal.classList.remove('hidden');
+            } else if (isBuildable) {
+                modalName.textContent = currentLandingSquare.name;
+                modalPrice.textContent = `Propiedad propia | Casa: $${currentLandingSquare.houseCost} | Hotel: $${currentLandingSquare.hotelCost}`;
+                updatePropertyActionButtons();
+                buyModal.classList.remove('hidden');
+            } else if (propertyInfo) {
+                // Propiedad de otro jugador → alquiler
+                if (propertyInfo.ownerId !== localPlayer.id) {
+                    const rentCost = gameManager.calculateRent(currentLandingSquare);
+                    localPlayer.money -= rentCost;
+                    const rentMessage = `${localPlayer.name} cayó en la propiedad de un rival y pagó $${rentCost} de alquiler.`;
+                
+                    await updateDiceResult(
+                        currentRoomId,
+                        [die1, die2],
+                        rentMessage
+                    );
+                
+                    await syncPlayerToRoom(
+                        currentRoomId,
+                        localPlayer
+                    );
+                }
             } else if ( gameManager.propertiesState[ currentLandingSquare.id ] ) {
                 const propertyInfo =
                     gameManager.propertiesState[
@@ -545,6 +669,71 @@ document.addEventListener('DOMContentLoaded', () => {
 
     btnDeclineBuy?.addEventListener('click', () => {
         buyModal.classList.add('hidden'); // Simplemente cierra la ventana si decide pasar
+
+        btnBuildHouse?.classList.add('hidden');
+        btnBuildHotel?.classList.add('hidden');
+    });
+
+    btnBuildHouse?.addEventListener('click', async () => {
+        if (!currentLandingSquare || !localPlayer) return;
+
+        const propertyId = currentLandingSquare.id;
+
+        // Costo provisional de construcción
+        const houseCost = currentLandingSquare.houseCost;
+
+        const result = gameManager.buildHouse(
+            localPlayer,
+            propertyId,
+            houseCost
+        );
+
+        if (!result.success) {
+            alert(result.message);
+            return;
+        }
+
+        const buildMessage = `🏠 ${localPlayer.name} construyó una casa en ${currentLandingSquare.name}.`;
+
+        await syncPlayerToRoom(currentRoomId, localPlayer);
+        await updateDiceResult(
+            currentRoomId,
+            [0, 0],
+            buildMessage
+        );
+
+        buyModal.classList.add('hidden');
+    });
+
+    btnBuildHotel?.addEventListener('click', async () => {
+        if (!currentLandingSquare || !localPlayer) return;
+
+        const propertyId = currentLandingSquare.id;
+
+        // Costo provisional de construcción
+        const hotelCost = currentLandingSquare.hotelCost;
+
+        const result = gameManager.buildHotel(
+            localPlayer,
+            propertyId,
+            hotelCost
+        );
+
+        if (!result.success) {
+            alert(result.message);
+            return;
+        }
+
+        const buildMessage = `🏨 ${localPlayer.name} construyó un hotel en ${currentLandingSquare.name}.`;
+
+        await syncPlayerToRoom(currentRoomId, localPlayer);
+        await updateDiceResult(
+            currentRoomId,
+            [0, 0],
+            buildMessage
+        );
+
+        buyModal.classList.add('hidden');
     });
 
     const btnEndTurn = document.getElementById('btn-end-turn');

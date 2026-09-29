@@ -7,6 +7,16 @@
     background: #fdfdfd;
 }
 
+.property-buildings {
+    position: absolute;
+    bottom: 4px;
+    left: 4px;
+    z-index: 5;
+    font-size: 11px;
+    line-height: 1;
+    white-space: nowrap;
+}
+
 .square-content {
     display: flex;
     flex-direction: column;

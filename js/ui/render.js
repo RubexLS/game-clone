@@ -31,6 +31,7 @@ export function renderBoard() {
 
         // Clases e identificación por posición
         squareDiv.classList.add('square', `square-${square.id}`);
+        squareDiv.dataset.squareId = square.id;
         squareDiv.style.gridColumn = coords.col;
         squareDiv.style.gridRow = coords.row;
 
