@@ -28,15 +28,71 @@ export class GameManager {
      * @param {Object} square - Datos de la casilla
      * @returns {number} Monto a pagar (alquiler base)
      */
-    calculateRent(square) {
+    calculateRent(square, ownerPlayer, diceTotal = 0) {
+        // Propiedades normales
         if (square.type === 'property' && square.rent) {
-            return square.rent[0]; // Alquiler base sin casas por ahora
+
+            const propertyState = this.propertiesState?.[square.id] || {};
+
+            const buildings = {
+                houses: propertyState.houses || 0,
+                hotel: propertyState.hotel || false
+            };
+
+            const groupProperties = BOARD_SQUARES.filter(
+                property =>
+                    property.type === 'property' &&
+                    property.group === square.group
+            );
+
+            const ownsEntireGroup = groupProperties.every(
+                property =>
+                    (ownerPlayer?.properties || []).includes(property.id)
+            );
+
+            // Grupo completo sin construcciones
+            if ( (buildings.houses || 0) === 0 && !buildings.hotel && ownsEntireGroup ) {
+                return square.rent[0] * 2;
+            }
+
+            // Hotel
+            if (buildings.hotel) return square.rent[5];
+
+            // Casas: 0, 1, 2, 3 o 4
+            const houses = buildings.houses || 0;
+
+            return square.rent[houses];
         }
+
+        // Ferrocarriles
         if (square.type === 'railroad') {
-            return 25; // Alquiler base estándar de ferrocarril
+
+            if (!ownerPlayer) return 25;
+
+            const railroadCount = (ownerPlayer.properties || []).filter(propertyId => {
+                    const railroad = BOARD_SQUARES.find( square => square.id === propertyId );
+                    return railroad?.type === 'railroad';
+            }).length;
+
+            const railroadRents = {
+                1: 25,
+                2: 50,
+                3: 100,
+                4: 200
+            };
+            return railroadRents[railroadCount] || 25;
         }
+
+        // Servicios públicos
         if (square.type === 'utility') {
-            return 25; // Alquiler base de servicios públicos
+
+            const utilityCount = (ownerPlayer?.properties || []).filter(propertyId => {
+                const utility = BOARD_SQUARES.find( square => square.id === propertyId );
+                return utility?.type === 'utility';
+            }).length;
+
+            if (utilityCount >= 2) return diceTotal * 10;
+            return diceTotal * 4;
         }
         return 0;
     }
@@ -106,6 +162,38 @@ export class GameManager {
             };
         }
 
+        // Obtener la cantidad de casas de cada propiedad del grupo
+        const groupBuildings = groupProperties.map(groupProperty => {
+            const buildings =
+                player.propertyBuildings?.[groupProperty.id] || {
+                    houses: 0,
+                    hotel: false
+                };
+            
+            return {
+                propertyId: groupProperty.id,
+                houses: buildings.houses || 0,
+                hotel: buildings.hotel || false
+            };
+        });
+
+        const currentBuildings =
+            groupBuildings.find(
+                building => building.propertyId === propertyId
+            );
+        
+        const minimumHouses = Math.min(
+            ...groupBuildings.map(building => building.houses)
+        );
+
+        // No se puede construir si esta propiedad ya está una casa por encima de la propiedad con menos casas.
+        if (currentBuildings.houses > minimumHouses) {
+            return {
+                allowed: false,
+                message: "Debes construir primero en las propiedades del grupo que tienen menos casas."
+            };
+        }
+
         const buildings =
             player.propertyBuildings?.[propertyId] || {
                 houses: 0,
@@ -167,29 +255,98 @@ export class GameManager {
     }
 
     buildHotel(player, propertyId, hotelCost) {
+        const property = BOARD_SQUARES.find(
+            square => square.id === propertyId
+        );
+
+        if (!property || property.type !== 'property') {
+            return {
+                success: false,
+                message: "Esta casilla no permite construir un hotel."
+            };
+        }
+
+        if (!(player.properties || []).includes(propertyId)) {
+            return {
+                success: false,
+                message: "No eres dueño de esta propiedad."
+            };
+        }
+
+        // Obtener todas las propiedades del grupo
+        const groupProperties = BOARD_SQUARES.filter(
+            square =>
+                square.type === 'property' &&
+                square.group === property.group
+        );
+
+        // Debe poseer todo el grupo
+        const ownsEntireGroup = groupProperties.every(
+            groupProperty =>
+                (player.properties || []).includes(groupProperty.id)
+        );
+
+        if (!ownsEntireGroup) {
+            return {
+                success: false,
+                message: "Debes ser dueño de todas las propiedades del grupo para construir un hotel."
+            };
+        }
+
         const buildings = player.propertyBuildings?.[propertyId];
-        
+
         if (!buildings) {
-            return { success: false, message: "Esta propiedad no tiene casas construidas." };
+            return {
+                success: false,
+                message: "Esta propiedad no tiene casas construidas."
+            };
         }
-    
+
         if (buildings.hotel) {
-            return { success: false, message: "Esta propiedad ya tiene un hotel." };
+            return {
+                success: false,
+                message: "Esta propiedad ya tiene un hotel."
+            };
         }
-    
+
         if ((buildings.houses || 0) < 4) {
-            return { success: false, message: "Necesitas 4 casas para construir un hotel." };
+            return {
+                success: false,
+                message: "Necesitas 4 casas para construir un hotel."
+            };
         }
-    
+
+        // Todas las propiedades del grupo deben tener 4 casas
+        const allPropertiesHaveFourHouses =
+            groupProperties.every(groupProperty => {
+                const groupBuilding = player.propertyBuildings?.[groupProperty.id];
+
+                return (
+                    groupBuilding &&
+                    !groupBuilding.hotel &&
+                    (groupBuilding.houses || 0) >= 4
+                );
+            });
+
+        if (!allPropertiesHaveFourHouses) {
+            return {
+                success: false,
+                message: "Todas las propiedades del grupo deben tener 4 casas antes de construir un hotel."
+            };
+        }
+
         if (player.money < hotelCost) {
-            return { success: false, message: `${player.name} no tiene suficiente dinero para construir un hotel.` };
+            return {
+                success: false,
+                message: `${player.name} no tiene suficiente dinero para construir un hotel.`
+            };
         }
-    
+
         player.money -= hotelCost;
-    
+
         buildings.houses = 0;
         buildings.hotel = true;
-    
+
         return {
             success: true,
             message: `${player.name} construyó un hotel en esta propiedad.`,
