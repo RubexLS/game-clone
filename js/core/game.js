@@ -162,14 +162,13 @@ export class GameManager {
             };
         }
 
-        // Obtener la cantidad de casas de cada propiedad del grupo
+        // Obtener la cantidad de casas de cada propiedad directamente desde el estado sincronizado de Firebase
         const groupBuildings = groupProperties.map(groupProperty => {
-            const buildings =
-                player.propertyBuildings?.[groupProperty.id] || {
-                    houses: 0,
-                    hotel: false
-                };
-            
+            const buildings = this.propertiesState?.[groupProperty.id] || {
+                houses: 0,
+                hotel: false
+            };
+
             return {
                 propertyId: groupProperty.id,
                 houses: buildings.houses || 0,
@@ -177,16 +176,14 @@ export class GameManager {
             };
         });
 
-        const currentBuildings =
-            groupBuildings.find(
-                building => building.propertyId === propertyId
-            );
-        
+        const currentBuildings = groupBuildings.find( building => building.propertyId === propertyId );
         const minimumHouses = Math.min(
-            ...groupBuildings.map(building => building.houses)
+            ...groupBuildings.map(
+                building => building.houses
+            )
         );
 
-        // No se puede construir si esta propiedad ya está una casa por encima de la propiedad con menos casas.
+        // No se puede construir si esta propiedad ya está por encima de otra del grupo
         if (currentBuildings.houses > minimumHouses) {
             return {
                 allowed: false,
@@ -194,8 +191,9 @@ export class GameManager {
             };
         }
 
+        // Obtener edificios actuales de esta propiedad desde el estado sincronizado
         const buildings =
-            player.propertyBuildings?.[propertyId] || {
+            this.propertiesState?.[propertyId] || {
                 houses: 0,
                 hotel: false
             };

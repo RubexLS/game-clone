@@ -323,56 +323,48 @@ document.addEventListener('DOMContentLoaded', () => {
     function updatePropertyActionButtons() {
         if (!currentLandingSquare || !localPlayer) return;
 
-        // Ocultar todo inicialmente
         btnConfirmBuy?.classList.add('hidden');
         btnDeclineBuy?.classList.add('hidden');
         btnBuildHouse?.classList.add('hidden');
         btnBuildHotel?.classList.add('hidden');
 
-        if (!currentLandingSquare || !localPlayer) return;
-
         const propertyId = currentLandingSquare.id;
-        const propertyInfo = gameManager.propertiesState[propertyId];
+        const propertyInfo = gameManager.propertiesState?.[propertyId];
 
-        // Propiedad libre → mostrar compra
+        // Propiedad sin dueño
         if (!propertyInfo) {
-            if (gameManager.canBuyProperty(currentLandingSquare, localPlayer)) {
+            if ( gameManager.canBuyProperty( currentLandingSquare, localPlayer ) ) {
                 btnConfirmBuy?.classList.remove('hidden');
                 btnDeclineBuy?.classList.remove('hidden');
             }
             return;
         }
 
-        // Propiedad de otro jugador → no mostrar acciones
+        // La propiedad pertenece a otro jugador
         if (propertyInfo.ownerId !== localPlayer.id) return;
 
-        // Propiedad propia
-        const buildings =
-            localPlayer.propertyBuildings?.[propertyId] || {
-                houses: 0,
-                hotel: false
-            };
+        // Edificios actuales de la propiedad
+        const buildings = { houses: propertyInfo.houses || 0, hotel: propertyInfo.hotel || false };
 
-        // Hotel → no se puede seguir construyendo
+        // Ya tiene hotel
         if (buildings.hotel) return;
 
-        // 4 casas → opción de hotel
-        if ((buildings.houses || 0) >= 4) {
+        // Tiene 4 casas: verificar si puede convertir a hotel
+        if (buildings.houses >= 4) {
             const groupProperties = BOARD_SQUARES.filter(
                 square =>
                     square.type === 'property' &&
                     square.group === currentLandingSquare.group
             );
-
             const allPropertiesHaveFourHouses = groupProperties.every(groupProperty => {
-                    const groupBuilding = localPlayer.propertyBuildings?.[groupProperty.id];
-                
-                    return (
-                        groupBuilding &&
-                        !groupBuilding.hotel &&
-                        (groupBuilding.houses || 0) >= 4
-                    );
-                });
+                const groupBuilding = gameManager.propertiesState?.[groupProperty.id];
+                return (
+                    groupBuilding &&
+                    groupBuilding.ownerId === localPlayer.id &&
+                    !groupBuilding.hotel &&
+                    (groupBuilding.houses || 0) >= 4
+                );
+            });
 
             if (allPropertiesHaveFourHouses) {
                 btnBuildHotel.textContent = `🏨 Construir hotel — $${currentLandingSquare.hotelCost}`;
@@ -381,7 +373,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        // 0–3 casas → opción de construir casa
+        // Todavía puede construir una casa
         btnBuildHouse.textContent = `🏠 Construir casa — $${currentLandingSquare.houseCost}`;
         btnBuildHouse?.classList.remove('hidden');
     }
@@ -711,12 +703,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const propertyId = currentLandingSquare.id;
         const houseCost = currentLandingSquare.houseCost;
-
-        // Primero validamos las reglas localmente
-        const validation = gameManager.canBuildOnProperty(
-            localPlayer,
-            propertyId
-        );
+        const validation = gameManager.canBuildOnProperty( localPlayer, propertyId );
 
         if (!validation.allowed) {
             alert(validation.message);
@@ -743,18 +730,6 @@ document.addEventListener('DOMContentLoaded', () => {
             // Descontar el dinero localmente
             localPlayer.money -= houseCost;
 
-            // Mantener la información local de edificios
-            if (!localPlayer.propertyBuildings) localPlayer.propertyBuildings = {};
-
-            if (!localPlayer.propertyBuildings[propertyId]) {
-                localPlayer.propertyBuildings[propertyId] = {
-                    houses: 0,
-                    hotel: false
-                };
-            }
-
-            localPlayer.propertyBuildings[propertyId].houses += 1;
-
             // Sincronizar el jugador
             await syncPlayerToRoom(
                 currentRoomId,
@@ -779,23 +754,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const propertyId = currentLandingSquare.id;
         const hotelCost = currentLandingSquare.hotelCost;
-
-        // Validación local de las reglas
-        const validation = gameManager.canBuildOnProperty(
-            localPlayer,
-            propertyId
-        );
+        const validation = gameManager.canBuildOnProperty( localPlayer, propertyId );
 
         if (!validation.allowed) {
             alert(validation.message);
             return;
         }
 
-        const buildings =
-            localPlayer.propertyBuildings?.[propertyId] || {
-                houses: 0,
-                hotel: false
-            };
+        // Obtener el estado actual de la propiedad desde Firebase
+        const propertyInfo = gameManager.propertiesState?.[propertyId];
+        const buildings = {
+            houses: propertyInfo?.houses || 0,
+            hotel: propertyInfo?.hotel || false
+        };
 
         // Debe tener 4 casas
         if (buildings.houses < 4) {
@@ -812,7 +783,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const buildMessage = `🏨 ${localPlayer.name} construyó un hotel en ` + `${currentLandingSquare.name}.`;
 
         try {
-
             // Registrar hotel en Firebase
             await buildHotelInCloud(
                 currentRoomId,
@@ -823,14 +793,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // Descontar dinero
             localPlayer.money -= hotelCost;
-
-            // Actualizar copia local
-            if (!localPlayer.propertyBuildings) localPlayer.propertyBuildings = {};
-
-            localPlayer.propertyBuildings[propertyId] = {
-                houses: 0,
-                hotel: true
-            };
 
             // Sincronizar jugador
             await syncPlayerToRoom(
@@ -845,7 +807,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 "Error al construir el hotel:",
                 error
             );
-
             alert( "No se pudo construir el hotel." );
         }
     });
@@ -976,10 +937,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (basicCardTypes.includes(card.type)) {
 
-                message = applyBasicCardEffect(
-                    card,
-                    localPlayer
-                );
+                message = applyBasicCardEffect( card, localPlayer, gameManager.propertiesState );
 
                 await syncPlayerToRoom(
                     currentRoomId,
