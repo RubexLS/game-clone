@@ -226,20 +226,6 @@ document.addEventListener('DOMContentLoaded', () => {
             });
 
             activePlayersList[uid].properties = playerProperties;
-            // Las construcciones ahora se obtienen desde rooms/properties
-            const playerBuildings = {};
-
-            Object.keys(roomData.properties || {}).forEach((propertyId) => {
-                const propertyData = roomData.properties[propertyId];
-            
-                if (propertyData.ownerId === uid) {
-                    playerBuildings[propertyId] = {
-                        houses: propertyData.houses || 0,
-                        hotel: propertyData.hotel || false
-                    };
-                }
-            });
-            activePlayersList[uid].propertyBuildings = playerBuildings;
 
             // Renderizar la tarjeta del jugador en el panel lateral izquierdo
             const playerCard = document.createElement('div');
@@ -685,7 +671,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const buyMessage = `¡${localPlayer.name} compró ${currentLandingSquare.name} por $${currentLandingSquare.price}!`;
 
         // Subir compra e historial a la nube simultáneamente
-        await buyPropertyInCloud(currentRoomId, currentLandingSquare.id, localPlayer.id, buyMessage);
+        await buyPropertyInCloud(currentRoomId, currentLandingSquare.id, localPlayer.id, currentLandingSquare.price, buyMessage);
         await syncPlayerToRoom(currentRoomId, localPlayer);
 
         buyModal.classList.add('hidden'); // Ocultar cuadro
@@ -720,15 +706,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         try {
             // Registrar la construcción en Firebase
-            await buildHouseInCloud(
-                currentRoomId,
-                propertyId,
-                localPlayer.id,
-                buildMessage
-            );
-
-            // Descontar el dinero localmente
-            localPlayer.money -= houseCost;
+            await buildHouseInCloud( currentRoomId, propertyId, localPlayer.id, houseCost, buildMessage );
 
             // Sincronizar el jugador
             await syncPlayerToRoom(

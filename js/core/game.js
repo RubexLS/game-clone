@@ -101,13 +101,9 @@ export class GameManager {
         let totalCost = 0;
 
         for (const propertyId of player.properties || []) {
-            const buildings = player.propertyBuildings?.[propertyId];
-
-            if (!buildings) continue;
-
+            const buildings = this.propertiesState?.[propertyId] || {};
             const houses = buildings.houses || 0;
             const hotel = buildings.hotel ? 1 : 0;
-
             totalCost += houses * houseCost;
             totalCost += hotel * hotelCost;
         }
@@ -217,138 +213,6 @@ export class GameManager {
         return {
             allowed: true,
             buildings
-        };
-    }
-
-    buildHouse(player, propertyId, houseCost) {
-        const validation = this.canBuildOnProperty(player, propertyId);
-
-        if (!validation.allowed) {
-            return { success: false, message: validation.message };
-        }
-
-        if (player.money < houseCost) {
-            return { success: false, message: `${player.name} no tiene suficiente dinero para construir una casa.` }
-        }
-
-        if (!player.propertyBuildings) player.propertyBuildings = {};
-
-        if (!player.propertyBuildings[propertyId]) {
-            player.propertyBuildings[propertyId] = {
-                houses: 0,
-                hotel: false
-            };
-        }
-
-        player.money -= houseCost;
-        player.propertyBuildings[propertyId].houses += 1;
-
-        const houses = player.propertyBuildings[propertyId].houses;
-
-        return {
-            success: true,
-            message: `${player.name} construyó una casa. Ahora tiene ${houses} casa${houses === 1 ? '' : 's'} en esta propiedad.`,
-            houses
-        };
-    }
-
-    buildHotel(player, propertyId, hotelCost) {
-        const property = BOARD_SQUARES.find(
-            square => square.id === propertyId
-        );
-
-        if (!property || property.type !== 'property') {
-            return {
-                success: false,
-                message: "Esta casilla no permite construir un hotel."
-            };
-        }
-
-        if (!(player.properties || []).includes(propertyId)) {
-            return {
-                success: false,
-                message: "No eres dueño de esta propiedad."
-            };
-        }
-
-        // Obtener todas las propiedades del grupo
-        const groupProperties = BOARD_SQUARES.filter(
-            square =>
-                square.type === 'property' &&
-                square.group === property.group
-        );
-
-        // Debe poseer todo el grupo
-        const ownsEntireGroup = groupProperties.every(
-            groupProperty =>
-                (player.properties || []).includes(groupProperty.id)
-        );
-
-        if (!ownsEntireGroup) {
-            return {
-                success: false,
-                message: "Debes ser dueño de todas las propiedades del grupo para construir un hotel."
-            };
-        }
-
-        const buildings = player.propertyBuildings?.[propertyId];
-
-        if (!buildings) {
-            return {
-                success: false,
-                message: "Esta propiedad no tiene casas construidas."
-            };
-        }
-
-        if (buildings.hotel) {
-            return {
-                success: false,
-                message: "Esta propiedad ya tiene un hotel."
-            };
-        }
-
-        if ((buildings.houses || 0) < 4) {
-            return {
-                success: false,
-                message: "Necesitas 4 casas para construir un hotel."
-            };
-        }
-
-        // Todas las propiedades del grupo deben tener 4 casas
-        const allPropertiesHaveFourHouses =
-            groupProperties.every(groupProperty => {
-                const groupBuilding = player.propertyBuildings?.[groupProperty.id];
-
-                return (
-                    groupBuilding &&
-                    !groupBuilding.hotel &&
-                    (groupBuilding.houses || 0) >= 4
-                );
-            });
-
-        if (!allPropertiesHaveFourHouses) {
-            return {
-                success: false,
-                message: "Todas las propiedades del grupo deben tener 4 casas antes de construir un hotel."
-            };
-        }
-
-        if (player.money < hotelCost) {
-            return {
-                success: false,
-                message: `${player.name} no tiene suficiente dinero para construir un hotel.`
-            };
-        }
-
-        player.money -= hotelCost;
-
-        buildings.houses = 0;
-        buildings.hotel = true;
-
-        return {
-            success: true,
-            message: `${player.name} construyó un hotel en esta propiedad.`,
-            hotel: true
         };
     }
 }
