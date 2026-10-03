@@ -1,7 +1,7 @@
 import { renderBoard } from './ui/render.js';
 import { Player, drawPlayerToken } from './core/player.js';
 import { loginAnonymously } from './services/auth.js';
-import { createGameRoom, syncPlayerToRoom, listenToRoom, updateDiceResult, buyPropertyInCloud, endTurnInCloud, getRoomSnapshot, payRentInCloud, payTaxInCloud, setTurnStatus, sendPlayerToJailInCloud, payJailFineInCloud, useJailCardInCloud, registerJailAttemptInCloud, buildHouseInCloud, buildHotelInCloud } from './services/network.js';
+import { createGameRoom, syncPlayerToRoom, listenToRoom, updateDiceResult, buyPropertyInCloud, endTurnInCloud, getRoomSnapshot, payRentInCloud, payTaxInCloud, setTurnStatus, sendPlayerToJailInCloud, payJailFineInCloud, useJailCardInCloud, registerJailAttemptInCloud, buildHouseInCloud, buildHotelInCloud, handleBankruptcyInCloud } from './services/network.js';
 import { GameManager } from './core/game.js';
 import { BOARD_SQUARES, getSquareById } from './core/board.js';
 import { CHANCE_CARDS, COMMUNITY_CHEST_CARDS, CardDeck, applyBasicCardEffect, applyPlayerInteractionCardEffect, applySpecialCardEffect } from './core/cards.js';
@@ -192,6 +192,16 @@ document.addEventListener('DOMContentLoaded', () => {
     function handleRoomUpdate(roomData) {
         const cloudPlayers = roomData.players || {};
         const gameplay = roomData.gameplay || {};
+        const gameFinished = roomData.meta?.status === "finished";
+
+        if (gameFinished) {
+            if (btnRollDice) btnRollDice.disabled = true;
+            if (btnEndTurn) btnEndTurn.disabled = true;
+            if (buyModal) buyModal.classList.add('hidden');
+            if (propertyActionModal) propertyActionModal.classList.add('hidden');
+        
+            return;
+        }
 
         // Sincronizar el registro de compras con nuestro gestor de reglas local
         gameManager.propertiesState = roomData.properties || {};
@@ -582,11 +592,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     taxMessage
                 );
 
-                await syncPlayerToRoom(
-                    currentRoomId,
-                    localPlayer
-                );
-
                 // El impuesto ya fue resuelto.y el jugador puede terminar su turno.
                 await setTurnStatus(
                     currentRoomId,
@@ -633,13 +638,27 @@ document.addEventListener('DOMContentLoaded', () => {
                         `${ownerPlayer.name} por ` +
                         `${currentLandingSquare.name}.`;
                 
-                    await payRentInCloud(
+                    const rentResult = await payRentInCloud(
                         currentRoomId,
                         localPlayer.id,
                         ownerId,
                         rentCost,
                         rentMessage
                     );
+
+                    if (rentResult.bankrupt) {
+                        const bankruptcyMessage = `¡${localPlayer.name} no pudo pagar ` + `el alquiler de $${rent}! ` + `Ha quedado en bancarrota.`;
+
+                        await handleBankruptcyInCloud(
+                            currentRoomId,
+                            localPlayer.id,
+                            ownerId,
+                            bankruptcyMessage
+                        );
+                    
+                        buyModal?.classList.add('hidden');
+                        return;
+                    }
                 }
             }
         } catch (error) {
@@ -663,18 +682,18 @@ document.addEventListener('DOMContentLoaded', () => {
     btnConfirmBuy?.addEventListener('click', async () => {
         if (!currentLandingSquare || !localPlayer) return;
 
-        // Restar dinero localmente e indexar ID de la propiedad comprada
-        localPlayer.money -= currentLandingSquare.price;
-        if (!localPlayer.properties) localPlayer.properties = [];
-        localPlayer.properties.push(currentLandingSquare.id);
+        const buyMessage = `¡${localPlayer.name} compró ` + `${currentLandingSquare.name} por ` + `$${currentLandingSquare.price}!`;
+        
+        try{
+            // Subir compra e historial a la nube simultáneamente
+            await buyPropertyInCloud(currentRoomId, currentLandingSquare.id, localPlayer.id, currentLandingSquare.price, buyMessage);
+            await syncPlayerToRoom(currentRoomId, localPlayer);
 
-        const buyMessage = `¡${localPlayer.name} compró ${currentLandingSquare.name} por $${currentLandingSquare.price}!`;
-
-        // Subir compra e historial a la nube simultáneamente
-        await buyPropertyInCloud(currentRoomId, currentLandingSquare.id, localPlayer.id, currentLandingSquare.price, buyMessage);
-        await syncPlayerToRoom(currentRoomId, localPlayer);
-
-        buyModal.classList.add('hidden'); // Ocultar cuadro
+            buyModal.classList.add('hidden'); // Ocultar cuadro
+        } catch (error) {
+        console.error("Error al comprar la propiedad:", error);
+        alert( "No se pudo completar la compra." );
+        }
     });
 
     btnDeclineBuy?.addEventListener('click', () => {
@@ -707,12 +726,6 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             // Registrar la construcción en Firebase
             await buildHouseInCloud( currentRoomId, propertyId, localPlayer.id, houseCost, buildMessage );
-
-            // Sincronizar el jugador
-            await syncPlayerToRoom(
-                currentRoomId,
-                localPlayer
-            );
 
             buyModal.classList.add('hidden');
         } catch (error) {
@@ -762,21 +775,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         try {
             // Registrar hotel en Firebase
-            await buildHotelInCloud(
-                currentRoomId,
-                propertyId,
-                localPlayer.id,
-                buildMessage
-            );
-
-            // Descontar dinero
-            localPlayer.money -= hotelCost;
-
-            // Sincronizar jugador
-            await syncPlayerToRoom(
-                currentRoomId,
-                localPlayer
-            );
+            await buildHotelInCloud( currentRoomId, propertyId, localPlayer.id, hotelCost, buildMessage );
 
             buyModal.classList.add('hidden');
         } catch (error) {
