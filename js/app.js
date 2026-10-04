@@ -9,6 +9,7 @@ import { CHANCE_CARDS, COMMUNITY_CHEST_CARDS, CardDeck, applyBasicCardEffect, ap
 // Variables globales para la sesión del jugador local
 let localPlayer = null;
 let currentRoomId = null;
+let stopRoomListener = null;
 let activePlayersList = {}; // Guarda las instancias locales de todos los jugadores de la sala
 let lastDisplayedAction = "";
 const gameManager = new GameManager(); // Instancia para manejar las reglas de compra
@@ -83,7 +84,39 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnAcceptCard = document.getElementById('btn-accept-card');
     let currentCard = null;
 
+    const gameWinnerMessage = document.getElementById('game-winner-message');
+    const winnerNameElement = document.getElementById('winner-name');
+    const btnBackToLobby = document.getElementById('btn-back-to-lobby');
+
     // LÓGICA DE CONEXIÓN (LOBBY)
+
+    btnBackToLobby?.addEventListener('click', () => {
+        // Ocultar mensaje de ganador
+        gameWinnerMessage?.classList.add('hidden');
+
+        // Mostrar lobby
+        const lobbyScreen = document.getElementById('lobby-screen');
+        if (lobbyScreen) lobbyScreen.classList.remove('hidden');
+
+        // Ocultar tablero
+        const gameContainer = document.getElementById('game-container');
+        if (gameContainer) gameContainer.classList.add('hidden');
+
+        if (stopRoomListener) {
+            stopRoomListener();
+            stopRoomListener = null;
+        }
+
+        // Limpiar estado local
+        localPlayer = null;
+        currentRoomId = null;
+        currentLandingSquare = null;
+        activePlayersList = {};
+
+        // Restablecer controles
+        if (btnRollDice) btnRollDice.disabled = false;
+        if (btnEndTurn) btnEndTurn.disabled = true;
+    });
 
     // Evento para CREAR una nueva sala en la nube
     btnCreateRoom?.addEventListener('click', async () => {
@@ -180,7 +213,7 @@ document.addEventListener('DOMContentLoaded', () => {
         renderBoard();
 
         // Activamos la escucha en tiempo real de Firebase para esta sala específica
-        listenToRoom(currentRoomId, (roomData) => {
+        stopRoomListener = listenToRoom(currentRoomId, (roomData) => {
             if (roomData) {
                 handleRoomUpdate(roomData);
             }
@@ -198,8 +231,9 @@ document.addEventListener('DOMContentLoaded', () => {
             if (btnRollDice) btnRollDice.disabled = true;
             if (btnEndTurn) btnEndTurn.disabled = true;
             if (buyModal) buyModal.classList.add('hidden');
-            if (propertyActionModal) propertyActionModal.classList.add('hidden');
-        
+            if (gameWinnerMessage) gameWinnerMessage.classList.remove('hidden');
+            if (winnerNameElement) winnerNameElement.textContent = `🏆 ${roomData.meta?.winnerName || "Jugador desconocido"} ha ganado la partida.`;
+
             return;
         }
 

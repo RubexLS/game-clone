@@ -214,3 +214,43 @@
     font-weight: bold;
     cursor: pointer;
 }
+
+.game-winner-message {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    background: rgba(0, 0, 0, 0.75);
+}
+
+.game-winner-message.hidden {
+    display: none;
+}
+
+.winner-content {
+    background: white;
+    padding: 35px 50px;
+    border-radius: 16px;
+    text-align: center;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+.winner-icon {
+    font-size: 60px;
+    margin-bottom: 10px;
+}
+
+.winner-content h2 {
+    margin: 0 0 10px;
+    font-size: 28px;
+}
+
+.winner-content p {
+    margin: 0;
+    font-size: 22px;
+    font-weight: bold;
+}
