@@ -1,7 +1,7 @@
 import { renderBoard } from './ui/render.js';
 import { Player, drawPlayerToken } from './core/player.js';
 import { loginAnonymously } from './services/auth.js';
-import { createGameRoom, syncPlayerToRoom, listenToRoom, updateDiceResult, buyPropertyInCloud, endTurnInCloud, getRoomSnapshot, payRentInCloud, payTaxInCloud, setTurnStatus, sendPlayerToJailInCloud, payJailFineInCloud, useJailCardInCloud, registerJailAttemptInCloud, buildHouseInCloud, buildHotelInCloud, handleBankruptcyInCloud } from './services/network.js';
+import { createGameRoom, syncPlayerToRoom, listenToRoom, updateDiceResult, buyPropertyInCloud, endTurnInCloud, getRoomSnapshot, payRentInCloud, payTaxInCloud, setTurnStatus, sendPlayerToJailInCloud, payJailFineInCloud, useJailCardInCloud, registerJailAttemptInCloud, buildHouseInCloud, buildHotelInCloud, handleBankruptcyInCloud, mortgagePropertyInCloud, unmortgagePropertyInCloud } from './services/network.js';
 import { GameManager } from './core/game.js';
 import { BOARD_SQUARES, getSquareById } from './core/board.js';
 import { CHANCE_CARDS, COMMUNITY_CHEST_CARDS, CardDeck, applyBasicCardEffect, applyPlayerInteractionCardEffect, applySpecialCardEffect } from './core/cards.js';
@@ -54,6 +54,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnDeclineBuy = document.getElementById('btn-decline-buy');
     const btnBuildHouse = document.getElementById('btn-build-house');
     const btnBuildHotel = document.getElementById('btn-build-hotel');
+    const btnMortgageProperty = document.getElementById('btn-mortgage-property');
+    const btnUnmortgageProperty = document.getElementById('btn-unmortgage-property');
 
     const jailPanel = document.createElement('div');
     jailPanel.id = 'jail-panel';
@@ -357,6 +359,8 @@ document.addEventListener('DOMContentLoaded', () => {
         btnDeclineBuy?.classList.add('hidden');
         btnBuildHouse?.classList.add('hidden');
         btnBuildHotel?.classList.add('hidden');
+        btnMortgageProperty?.classList.add('hidden');
+        btnUnmortgageProperty?.classList.add('hidden');
 
         const propertyId = currentLandingSquare.id;
         const propertyInfo = gameManager.propertiesState?.[propertyId];
@@ -375,6 +379,23 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Edificios actuales de la propiedad
         const buildings = { houses: propertyInfo.houses || 0, hotel: propertyInfo.hotel || false };
+        const mortgageValue = Math.floor( currentLandingSquare.price / 2 );
+
+        // Propiedad ya hipotecada
+        if (propertyInfo.mortgaged) {
+            const unmortgageCost = Math.floor( mortgageValue * 1.10 );
+            btnUnmortgageProperty.textContent = `🏦 Deshipotecar propiedad — pagar $${unmortgageCost}`;
+        
+            // Solo mostrar si tiene suficiente dinero
+            if (localPlayer.money >= unmortgageCost) tnUnmortgageProperty?.classList.remove('hidden');
+            return;
+        }
+
+        // Se puede hipotecar únicamente si no tiene edificios
+        if (buildings.houses === 0 && !buildings.hotel) {
+            btnMortgageProperty.textContent = `🏦 Hipotecar propiedad — recibir $${mortgageValue}`;
+            btnMortgageProperty?.classList.remove('hidden');
+        }
 
         // Ya tiene hotel
         if (buildings.hotel) return;
@@ -819,6 +840,115 @@ document.addEventListener('DOMContentLoaded', () => {
                 error
             );
             alert( "No se pudo construir el hotel." );
+        }
+    });
+
+    btnMortgageProperty?.addEventListener('click', async () => {
+        if (!currentLandingSquare || !localPlayer) return;
+
+        const propertyId = currentLandingSquare.id;
+        const propertyInfo = gameManager.propertiesState?.[propertyId];
+
+        // Verificar que la propiedad exista
+        if (!propertyInfo) {
+            alert("No se encontró la información de la propiedad.");
+            return;
+        }
+
+        // Verificar que el jugador sea el propietario
+        if (propertyInfo.ownerId !== localPlayer.id) {
+            alert("No eres dueño de esta propiedad.");
+            return;
+        }
+
+        // Verificar que no esté hipotecada
+        if (propertyInfo.mortgaged) {
+            alert("Esta propiedad ya está hipotecada.");
+            return;
+        }
+
+        // Verificar que no tenga casas ni hotel
+        const houses = propertyInfo.houses || 0;
+        const hotel = propertyInfo.hotel || false;
+
+        if (houses > 0 || hotel) {
+            alert( "No puedes hipotecar una propiedad que tenga casas o hotel." );
+            return;
+        }
+
+        // Valor de la hipoteca: 50% del precio de compra
+        const mortgageValue = Math.floor( currentLandingSquare.price / 2 );
+
+        const mortgageMessage = `🏦 ${localPlayer.name} hipotecó ` + `${currentLandingSquare.name} y recibió ` + `$${mortgageValue}.`;
+
+        try {
+            await mortgagePropertyInCloud(
+                currentRoomId,
+                propertyId,
+                localPlayer.id,
+                mortgageValue,
+                mortgageMessage
+            );
+
+            buyModal.classList.add('hidden');
+
+        } catch (error) {
+            console.error( "Error al hipotecar la propiedad:", error );
+            alert( "No se pudo hipotecar la propiedad." );
+        }
+    });
+
+    btnUnmortgageProperty?.addEventListener('click', async () => {
+        if (!currentLandingSquare || !localPlayer) return;
+
+        const propertyId = currentLandingSquare.id;
+        const propertyInfo = gameManager.propertiesState?.[propertyId];
+
+        // Verificar que la propiedad exista
+        if (!propertyInfo) {
+            alert("No se encontró la información de la propiedad.");
+            return;
+        }
+
+        // Verificar que el jugador sea el propietario
+        if (propertyInfo.ownerId !== localPlayer.id) {
+            alert("No eres dueño de esta propiedad.");
+            return;
+        }
+
+        // Verificar que esté hipotecada
+        if (!propertyInfo.mortgaged) {
+            alert("Esta propiedad no está hipotecada.");
+            return;
+        }
+
+        // Valor de la hipoteca
+        const mortgageValue = Math.floor( currentLandingSquare.price / 2 );
+        // Costo para recuperar la propiedad: 110%
+        const unmortgageCost = Math.floor( mortgageValue * 1.10 );
+
+        // Verificar dinero disponible
+        if (localPlayer.money < unmortgageCost) {
+            alert( `${localPlayer.name} no tiene suficiente dinero ` + `para deshipotecar esta propiedad.` );
+            return;
+        }
+
+        const unmortgageMessage = `🏦 ${localPlayer.name} deshipotecó ` + `${currentLandingSquare.name} y pagó ` + `$${unmortgageCost}.`;
+
+        try {
+            await unmortgagePropertyInCloud(
+                currentRoomId,
+                propertyId,
+                localPlayer.id,
+                unmortgageCost,
+                unmortgageMessage
+            );
+
+            buyModal.classList.add('hidden');
+
+        } catch (error) {
+            console.error( "Error al deshipotecar la propiedad:", error );
+            alert( "No se pudo deshipotecar la propiedad." );
         }
     });
 
