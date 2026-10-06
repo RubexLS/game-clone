@@ -286,6 +286,7 @@ document.addEventListener('DOMContentLoaded', () => {
             drawPlayerToken(activePlayersList[uid]);
         });
         renderPropertyBuildings();
+        renderMyProperties();
 
         // Gestión elemental del turno (Habilitar botones solo al jugador correspondiente)
         const btnEndTurn = document.getElementById('btn-end-turn');
@@ -387,7 +388,7 @@ document.addEventListener('DOMContentLoaded', () => {
             btnUnmortgageProperty.textContent = `🏦 Deshipotecar propiedad — pagar $${unmortgageCost}`;
         
             // Solo mostrar si tiene suficiente dinero
-            if (localPlayer.money >= unmortgageCost) tnUnmortgageProperty?.classList.remove('hidden');
+            if (localPlayer.money >= unmortgageCost) btnUnmortgageProperty?.classList.remove('hidden');
             return;
         }
 
@@ -438,39 +439,103 @@ document.addEventListener('DOMContentLoaded', () => {
         const propertiesState = gameManager.propertiesState || {};
 
         Object.keys(propertiesState).forEach((propertyId) => {
-
             const propertyData = propertiesState[propertyId];
+
             if (!propertyData) return;
-            const squareElement = document.querySelector(`[data-square-id="${propertyId}"]`);
+
+            const squareElement = document.querySelector(
+                `[data-square-id="${propertyId}"]`
+            );
 
             if (!squareElement) return;
+
+            // Propiedad hipotecada
+            if (propertyData.mortgaged) {
+                const mortgageElement = document.createElement('div');
+                mortgageElement.className = 'property-buildings';
+                mortgageElement.textContent = '🏦';
+                squareElement.appendChild( mortgageElement );
+                return;
+            }
 
             const houses = propertyData.houses || 0;
             const hotel = propertyData.hotel || false;
 
+            // Hotel
             if (hotel) {
                 const hotelElement = document.createElement('div');
                 hotelElement.className = 'property-buildings';
                 hotelElement.textContent = '🏨';
-                squareElement.appendChild(hotelElement);
+                squareElement.appendChild( hotelElement );
                 return;
             }
 
+            // Casas
             if (houses > 0) {
-
                 const buildingsElement = document.createElement('div');
-
                 buildingsElement.className = 'property-buildings';
-
                 buildingsElement.textContent = '🏠'.repeat(houses);
-
                 squareElement.appendChild( buildingsElement );
             }
         });
     }
 
-    // ACCIONES DE JUEGO (EVENTOS LOCALES -> ENVIAR A LA NUBE)
+    function renderMyProperties() {
+        const propertiesList = document.getElementById('my-properties-list');
 
+        if (!propertiesList || !localPlayer) return;
+
+        propertiesList.innerHTML = '';
+
+        const propertiesState = gameManager.propertiesState || {};
+
+        const myProperties = Object.entries(propertiesState).filter(([propertyId, propertyData]) => {
+                return propertyData && propertyData.ownerId === localPlayer.id;
+        });
+
+        if (myProperties.length === 0) {
+            const emptyMessage = document.createElement('div');
+
+            emptyMessage.textContent = 'No tienes propiedades.';
+
+            emptyMessage.style.textAlign = 'center';
+            emptyMessage.style.fontSize = '13px';
+            emptyMessage.style.opacity = '0.7';
+
+            propertiesList.appendChild(emptyMessage);
+            return;
+        }
+
+        myProperties.forEach(([propertyId, propertyData]) => {
+            const property = BOARD_SQUARES.find( square => square.id === Number(propertyId) );
+
+            if (!property) return;
+
+            const propertyElement = document.createElement('div');
+
+            propertyElement.className = 'my-property-item';
+
+            const houses = propertyData.houses || 0;
+            const hotel = propertyData.hotel || false;
+            const status = propertyData.mortgaged
+                ? '🏦 Hipotecada'
+                : hotel
+                    ? '🏨 Hotel'
+                    : houses > 0
+                        ? `🏠 ${houses} casa${houses > 1 ? 's' : ''}`
+                        : 'Sin construcciones';
+
+            propertyElement.innerHTML = `
+                <strong>${property.name}</strong>
+                <div>💰 Valor: $${property.price}</div>
+                <div>${status}</div>
+            `;
+
+            propertiesList.appendChild(propertyElement);
+        });
+    }
+
+    // ACCIONES DE JUEGO (EVENTOS LOCALES -> ENVIAR A LA NUBE)
     btnRollDice?.addEventListener('click', async () => {
 
         if (!localPlayer || !currentRoomId) return;
@@ -702,7 +767,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     );
 
                     if (rentResult.bankrupt) {
-                        const bankruptcyMessage = `¡${localPlayer.name} no pudo pagar ` + `el alquiler de $${rent}! ` + `Ha quedado en bancarrota.`;
+                        const bankruptcyMessage = `¡${localPlayer.name} no pudo pagar ` + `el alquiler de $${rentCost}! ` + `Ha quedado en bancarrota.`;
 
                         await handleBankruptcyInCloud(
                             currentRoomId,
@@ -742,8 +807,6 @@ document.addEventListener('DOMContentLoaded', () => {
         try{
             // Subir compra e historial a la nube simultáneamente
             await buyPropertyInCloud(currentRoomId, currentLandingSquare.id, localPlayer.id, currentLandingSquare.price, buyMessage);
-            await syncPlayerToRoom(currentRoomId, localPlayer);
-
             buyModal.classList.add('hidden'); // Ocultar cuadro
         } catch (error) {
         console.error("Error al comprar la propiedad:", error);

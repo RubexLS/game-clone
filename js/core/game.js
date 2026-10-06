@@ -34,6 +34,8 @@ export class GameManager {
 
             const propertyState = this.propertiesState?.[square.id] || {};
 
+            if (propertyState.mortgaged) return 0;
+
             const buildings = {
                 houses: propertyState.houses || 0,
                 hotel: propertyState.hotel || false
@@ -69,6 +71,10 @@ export class GameManager {
 
             if (!ownerPlayer) return 25;
 
+            const propertyState = this.propertiesState?.[square.id] || {};
+
+            if (propertyState.mortgaged) return 0;
+
             const railroadCount = (ownerPlayer.properties || []).filter(propertyId => {
                     const railroad = BOARD_SQUARES.find( square => square.id === propertyId );
                     return railroad?.type === 'railroad';
@@ -85,6 +91,9 @@ export class GameManager {
 
         // Servicios públicos
         if (square.type === 'utility') {
+            const propertyState = this.propertiesState?.[square.id] || {};
+
+            if (propertyState.mortgaged) return 0;
 
             const utilityCount = (ownerPlayer?.properties || []).filter(propertyId => {
                 const utility = BOARD_SQUARES.find( square => square.id === propertyId );
@@ -136,6 +145,15 @@ export class GameManager {
             return {
                 allowed: false,
                 message: "No eres dueño de esta propiedad."
+            };
+        }
+
+        const propertyState = this.propertiesState?.[propertyId] || {};
+
+        if (propertyState.mortgaged) {
+            return {
+                allowed: false,
+                message: "No puedes construir en una propiedad hipotecada."
             };
         }
 

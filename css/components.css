@@ -254,3 +254,25 @@
     font-size: 22px;
     font-weight: bold;
 }
+
+/* ================================
+    Panel de mis propiedades
+================================ */
+
+#my-properties-panel {
+    margin-top: 15px;
+    padding-top: 10px;
+    border-top: 2px solid rgba(0, 0, 0, 0.2);
+}
+
+#my-properties-panel h3 {
+    margin: 0 0 10px;
+    font-size: 16px;
+    text-align: center;
+}
+
+#my-properties-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
