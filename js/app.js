@@ -1,7 +1,7 @@
 import { renderBoard } from './ui/render.js';
 import { Player, drawPlayerToken } from './core/player.js';
 import { loginAnonymously } from './services/auth.js';
-import { createGameRoom, syncPlayerToRoom, listenToRoom, updateDiceResult, buyPropertyInCloud, endTurnInCloud, getRoomSnapshot, payRentInCloud, payTaxInCloud, setTurnStatus, sendPlayerToJailInCloud, payJailFineInCloud, useJailCardInCloud, registerJailAttemptInCloud, buildHouseInCloud, buildHotelInCloud, handleBankruptcyInCloud, mortgagePropertyInCloud, unmortgagePropertyInCloud } from './services/network.js';
+import { createGameRoom, syncPlayerToRoom, listenToRoom, updateDiceResult, buyPropertyInCloud, endTurnInCloud, getRoomSnapshot, payRentInCloud, payTaxInCloud, setTurnStatus, sendPlayerToJailInCloud, payJailFineInCloud, useJailCardInCloud, registerJailAttemptInCloud, buildHouseInCloud, buildHotelInCloud, handleBankruptcyInCloud, mortgagePropertyInCloud, unmortgagePropertyInCloud, sellHouseInCloud } from './services/network.js';
 import { GameManager } from './core/game.js';
 import { BOARD_SQUARES, getSquareById } from './core/board.js';
 import { CHANCE_CARDS, COMMUNITY_CHEST_CARDS, CardDeck, applyBasicCardEffect, applyPlayerInteractionCardEffect, applySpecialCardEffect } from './core/cards.js';
@@ -54,6 +54,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnDeclineBuy = document.getElementById('btn-decline-buy');
     const btnBuildHouse = document.getElementById('btn-build-house');
     const btnBuildHotel = document.getElementById('btn-build-hotel');
+    const btnSellHouse = document.getElementById('btn-sell-house');
     const btnMortgageProperty = document.getElementById('btn-mortgage-property');
     const btnUnmortgageProperty = document.getElementById('btn-unmortgage-property');
 
@@ -359,6 +360,7 @@ document.addEventListener('DOMContentLoaded', () => {
         btnConfirmBuy?.classList.add('hidden');
         btnDeclineBuy?.classList.add('hidden');
         btnBuildHouse?.classList.add('hidden');
+        btnSellHouse?.classList.add('hidden');
         btnBuildHotel?.classList.add('hidden');
         btnMortgageProperty?.classList.add('hidden');
         btnUnmortgageProperty?.classList.add('hidden');
@@ -396,6 +398,12 @@ document.addEventListener('DOMContentLoaded', () => {
         if (buildings.houses === 0 && !buildings.hotel) {
             btnMortgageProperty.textContent = `🏦 Hipotecar propiedad — recibir $${mortgageValue}`;
             btnMortgageProperty?.classList.remove('hidden');
+        }
+
+        if (buildings.houses > 0) {
+            const sellValue = Math.floor( currentLandingSquare.houseCost / 2 );
+            btnSellHouse.textContent = `🏠 Vender casa — recibir $${sellValue}`;
+            btnSellHouse?.classList.remove('hidden');
         }
 
         // Ya tiene hotel
@@ -529,9 +537,23 @@ document.addEventListener('DOMContentLoaded', () => {
                 <strong>${property.name}</strong>
                 <div>💰 Valor: $${property.price}</div>
                 <div>${status}</div>
+                <button class="btn-manage-property" data-property-id="${property.id}">
+                    Gestionar
+                </button>
             `;
 
             propertiesList.appendChild(propertyElement);
+
+            const manageButton = propertyElement.querySelector('.btn-manage-property');
+
+            manageButton?.addEventListener('click', () => {
+                currentLandingSquare = property;
+                updatePropertyActionButtons();
+            
+                buyModal.classList.remove('hidden');
+                modalPropertyName.textContent = property.name;
+                modalPropertyPrice.textContent = `Valor: $${property.price}`;
+            });
         });
     }
 
@@ -858,6 +880,70 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    btnSellHouse?.addEventListener('click', async () => {
+        if (!currentLandingSquare || !localPlayer) return;
+
+        const propertyId = currentLandingSquare.id;
+        const propertyInfo = gameManager.propertiesState?.[propertyId];
+
+        if (!propertyInfo) {
+            alert("No se encontró la propiedad.");
+            return;
+        }
+
+        const sellValidation = gameManager.canSellHouse(
+            localPlayer,
+            propertyId
+        );
+        
+        if (!sellValidation.allowed) {
+            alert(sellValidation.message);
+            return;
+        }
+
+        if (propertyInfo.ownerId !== localPlayer.id) {
+            alert("No eres dueño de esta propiedad.");
+            return;
+        }
+
+        if (propertyInfo.mortgaged) {
+            alert("No puedes vender construcciones de una propiedad hipotecada.");
+            return;
+        }
+
+        if (propertyInfo.hotel) {
+            alert("No puedes vender una casa porque esta propiedad tiene un hotel.");
+            return;
+        }
+
+        const houses = propertyInfo.houses || 0;
+
+        if (houses <= 0) {
+            alert("Esta propiedad no tiene casas para vender.");
+            return;
+        }
+
+        const sellValue = Math.floor( currentLandingSquare.houseCost / 2 );
+        const sellMessage = `🏠 ${localPlayer.name} vendió una casa de ` + `${currentLandingSquare.name} y recibió $${sellValue}.`;
+
+        try {
+            await sellHouseInCloud(
+                currentRoomId,
+                propertyId,
+                localPlayer.id,
+                sellValue,
+                sellMessage
+            );
+        } catch (error) {
+            console.error(
+                "Error al vender la casa:",
+                error
+            );
+
+            alert("No se pudo vender la casa.");
+        }
+    });
+
     btnBuildHotel?.addEventListener('click', async () => {
         if (!currentLandingSquare || !localPlayer) return;
 
@@ -952,9 +1038,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 mortgageValue,
                 mortgageMessage
             );
-
-            buyModal.classList.add('hidden');
-
         } catch (error) {
             console.error( "Error al hipotecar la propiedad:", error );
             alert( "No se pudo hipotecar la propiedad." );
@@ -1006,9 +1089,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 unmortgageCost,
                 unmortgageMessage
             );
-
-            buyModal.classList.add('hidden');
-
         } catch (error) {
             console.error( "Error al deshipotecar la propiedad:", error );
             alert( "No se pudo deshipotecar la propiedad." );

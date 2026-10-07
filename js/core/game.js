@@ -233,4 +233,103 @@ export class GameManager {
             buildings
         };
     }
+
+    canSellHouse(player, propertyId) {
+        const property = BOARD_SQUARES.find( square => square.id === propertyId );
+
+        if (!property) {
+            return {
+                allowed: false,
+                message: "La propiedad no existe."
+            };
+        }
+
+        if (property.type !== 'property') {
+            return {
+                allowed: false,
+                message: "Solo puedes vender casas de propiedades."
+            };
+        }
+
+        if (!(player.properties || []).includes(propertyId)) {
+            return {
+                allowed: false,
+                message: "No eres dueño de esta propiedad."
+            };
+        }
+
+        const propertyState =
+            this.propertiesState?.[propertyId] || {};
+
+        if (propertyState.mortgaged) {
+            return {
+                allowed: false,
+                message:
+                    "No puedes vender construcciones de una propiedad hipotecada."
+            };
+        }
+
+        if (propertyState.hotel) {
+            return {
+                allowed: false,
+                message:
+                    "Debes vender el hotel antes de vender casas."
+            };
+        }
+
+        const houses = propertyState.houses || 0;
+
+        if (houses <= 0) {
+            return {
+                allowed: false,
+                message:
+                    "Esta propiedad no tiene casas para vender."
+            };
+        }
+
+        const groupProperties = BOARD_SQUARES.filter(
+            square =>
+                square.type === 'property' &&
+                square.group === property.group
+        );
+
+        const groupBuildings = groupProperties.map(
+            groupProperty => {
+                const buildings =
+                    this.propertiesState?.[groupProperty.id] || {};
+
+                return {
+                    propertyId: groupProperty.id,
+                    houses: buildings.houses || 0,
+                    hotel: buildings.hotel || false
+                };
+            }
+        );
+
+        const otherProperties = groupBuildings.filter(
+            building =>
+                building.propertyId !== propertyId
+        );
+
+        const maximumOtherHouses =
+            otherProperties.length > 0
+                ? Math.max(
+                    ...otherProperties.map(
+                        building => building.houses
+                    )
+                )
+                : 0;
+
+        if (houses - 1 < maximumOtherHouses) {
+            return {
+                allowed: false,
+                message:
+                    "Debes vender primero las casas de las propiedades del grupo que tienen más casas."
+            };
+        }
+
+        return {
+            allowed: true
+        };
+    }
 }
