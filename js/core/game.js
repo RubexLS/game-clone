@@ -258,22 +258,19 @@ export class GameManager {
             };
         }
 
-        const propertyState =
-            this.propertiesState?.[propertyId] || {};
+        const propertyState = this.propertiesState?.[propertyId] || {};
 
         if (propertyState.mortgaged) {
             return {
                 allowed: false,
-                message:
-                    "No puedes vender construcciones de una propiedad hipotecada."
+                message: "No puedes vender construcciones de una propiedad hipotecada."
             };
         }
 
         if (propertyState.hotel) {
             return {
                 allowed: false,
-                message:
-                    "Debes vender el hotel antes de vender casas."
+                message: "Debes vender el hotel antes de vender casas."
             };
         }
 
@@ -282,8 +279,7 @@ export class GameManager {
         if (houses <= 0) {
             return {
                 allowed: false,
-                message:
-                    "Esta propiedad no tiene casas para vender."
+                message: "Esta propiedad no tiene casas para vender."
             };
         }
 
@@ -295,8 +291,7 @@ export class GameManager {
 
         const groupBuildings = groupProperties.map(
             groupProperty => {
-                const buildings =
-                    this.propertiesState?.[groupProperty.id] || {};
+                const buildings = this.propertiesState?.[groupProperty.id] || {};
 
                 return {
                     propertyId: groupProperty.id,
@@ -331,5 +326,58 @@ export class GameManager {
         return {
             allowed: true
         };
+    }
+
+    canMortgageProperty(player, propertyId) {
+        const property = BOARD_SQUARES.find( square => square.id === propertyId );
+
+        if (!property) {
+            return {
+                allowed: false,
+                message: "La propiedad no existe."
+            };
+        }
+
+        if (!(player.properties || []).includes(propertyId)) {
+            return {
+                allowed: false,
+                message: "No eres dueño de esta propiedad."
+            };
+        }
+
+        const propertyState = this.propertiesState?.[propertyId] || {};
+
+        if (propertyState.mortgaged) {
+            return {
+                allowed: false,
+                message: "Esta propiedad ya está hipotecada."
+            };
+        }
+
+        //Antes de hipotecar una propiedad, no debe existir ninguna construcción en otra propiedad del mismo grupo.
+        if (property.type === 'property') {
+
+            const groupProperties = BOARD_SQUARES.filter(
+                square =>
+                    square.type === 'property' &&
+                    square.group === property.group
+            );
+
+            const hasBuildingsInGroup = groupProperties.some(groupProperty => {
+                const buildings = this.propertiesState?.[groupProperty.id] || {};
+                const houses = buildings.houses || 0;
+                const hotel = buildings.hotel || false;
+
+                return houses > 0 || hotel;
+            });
+
+            if (hasBuildingsInGroup) {
+                return {
+                    allowed: false,
+                    message: "No puedes hipotecar una propiedad mientras existan casas o un hotel en alguna propiedad del mismo grupo."
+                };
+            }
+        }
+        return { allowed: true };
     }
 }

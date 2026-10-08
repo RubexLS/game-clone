@@ -1,7 +1,7 @@
 import { renderBoard } from './ui/render.js';
 import { Player, drawPlayerToken } from './core/player.js';
 import { loginAnonymously } from './services/auth.js';
-import { createGameRoom, syncPlayerToRoom, listenToRoom, updateDiceResult, buyPropertyInCloud, endTurnInCloud, getRoomSnapshot, payRentInCloud, payTaxInCloud, setTurnStatus, sendPlayerToJailInCloud, payJailFineInCloud, useJailCardInCloud, registerJailAttemptInCloud, buildHouseInCloud, buildHotelInCloud, handleBankruptcyInCloud, mortgagePropertyInCloud, unmortgagePropertyInCloud, sellHouseInCloud } from './services/network.js';
+import { createGameRoom, syncPlayerToRoom, listenToRoom, updateDiceResult, buyPropertyInCloud, endTurnInCloud, getRoomSnapshot, payRentInCloud, payTaxInCloud, setTurnStatus, sendPlayerToJailInCloud, payJailFineInCloud, useJailCardInCloud, registerJailAttemptInCloud, buildHouseInCloud, buildHotelInCloud, handleBankruptcyInCloud, mortgagePropertyInCloud, unmortgagePropertyInCloud, sellHouseInCloud, sellHotelInCloud } from './services/network.js';
 import { GameManager } from './core/game.js';
 import { BOARD_SQUARES, getSquareById } from './core/board.js';
 import { CHANCE_CARDS, COMMUNITY_CHEST_CARDS, CardDeck, applyBasicCardEffect, applyPlayerInteractionCardEffect, applySpecialCardEffect } from './core/cards.js';
@@ -54,6 +54,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnDeclineBuy = document.getElementById('btn-decline-buy');
     const btnBuildHouse = document.getElementById('btn-build-house');
     const btnBuildHotel = document.getElementById('btn-build-hotel');
+    const btnSellHotel = document.getElementById('btn-sell-hotel');
     const btnSellHouse = document.getElementById('btn-sell-house');
     const btnMortgageProperty = document.getElementById('btn-mortgage-property');
     const btnUnmortgageProperty = document.getElementById('btn-unmortgage-property');
@@ -362,6 +363,7 @@ document.addEventListener('DOMContentLoaded', () => {
         btnBuildHouse?.classList.add('hidden');
         btnSellHouse?.classList.add('hidden');
         btnBuildHotel?.classList.add('hidden');
+        btnSellHotel?.classList.add('hidden');
         btnMortgageProperty?.classList.add('hidden');
         btnUnmortgageProperty?.classList.add('hidden');
 
@@ -407,7 +409,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // Ya tiene hotel
-        if (buildings.hotel) return;
+        if (buildings.hotel) {
+            const sellValue = Math.floor( currentLandingSquare.hotelCost / 2 );
+            btnSellHotel.textContent = `🏨 Vender hotel — recibir $${sellValue}`;
+            btnSellHotel?.classList.remove('hidden');
+            return;
+        }
 
         // Tiene 4 casas: verificar si puede convertir a hotel
         if (buildings.houses >= 4) {
@@ -727,12 +734,33 @@ document.addEventListener('DOMContentLoaded', () => {
                 const taxAmount = currentLandingSquare.cost;
                 const taxMessage = `${localPlayer.name} pagó ` + `$${taxAmount} de impuesto ` + `por caer en ${currentLandingSquare.name}.`;
 
-                await payTaxInCloud(
+                const taxResult = await payTaxInCloud(
                     currentRoomId,
                     localPlayer.id,
                     taxAmount,
                     taxMessage
                 );
+
+                if (taxResult?.bankrupt) {
+                    const bankruptcyMessage = `¡${localPlayer.name} no pudo pagar el impuesto de ` + `$${currentLandingSquare.cost}!`;
+
+                    try {
+                        await handleBankruptcyInCloud(
+                            currentRoomId,
+                            localPlayer.id,
+                            null,
+                            bankruptcyMessage
+                        );
+                    } catch (error) {
+                        console.error(
+                            "Error al procesar la bancarrota por impuesto:",
+                            error
+                        );
+                    
+                        alert( "No se pudo procesar la bancarrota." );
+                    }
+                    return;
+                }
 
                 // El impuesto ya fue resuelto.y el jugador puede terminar su turno.
                 await setTurnStatus(
@@ -992,6 +1020,53 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    btnSellHotel?.addEventListener('click', async () => {
+        if (!currentLandingSquare || !localPlayer) return;
+
+        const propertyId = currentLandingSquare.id;
+        const propertyInfo = gameManager.propertiesState?.[propertyId];
+
+        if (!propertyInfo) {
+            alert("No se encontró la propiedad.");
+            return;
+        }
+
+        if (propertyInfo.ownerId !== localPlayer.id) {
+            alert("No eres dueño de esta propiedad.");
+            return;
+        }
+
+        if (propertyInfo.mortgaged) {
+            alert( "No puedes vender el hotel de una propiedad hipotecada." );
+            return;
+        }
+
+        if (!propertyInfo.hotel) {
+            alert("Esta propiedad no tiene un hotel para vender.");
+            return;
+        }
+
+        const sellValue = Math.floor( currentLandingSquare.hotelCost / 2 );
+        const sellMessage = `🏨 ${localPlayer.name} vendió el hotel de ` + `${currentLandingSquare.name} y recibió $${sellValue}.`;
+
+        try {
+            await sellHotelInCloud(
+                currentRoomId,
+                propertyId,
+                localPlayer.id,
+                sellValue,
+                sellMessage
+            );
+        } catch (error) {
+            console.error(
+                "Error al vender el hotel:",
+                error
+            );
+
+            alert("No se pudo vender el hotel.");
+        }
+    });
+
     btnMortgageProperty?.addEventListener('click', async () => {
         if (!currentLandingSquare || !localPlayer) return;
 
@@ -1001,6 +1076,17 @@ document.addEventListener('DOMContentLoaded', () => {
         // Verificar que la propiedad exista
         if (!propertyInfo) {
             alert("No se encontró la información de la propiedad.");
+            return;
+        }
+
+        const mortgageValidation =
+            gameManager.canMortgageProperty(
+                localPlayer,
+                propertyId
+            );
+        
+        if (!mortgageValidation.allowed) {
+            alert(mortgageValidation.message);
             return;
         }
 
