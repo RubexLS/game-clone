@@ -1305,7 +1305,41 @@ document.addEventListener('DOMContentLoaded', () => {
                 "get_out_of_jail_free"
             ];
 
-            if (basicCardTypes.includes(card.type)) {
+            if (card.type === "property_tax") {
+                const result = applyBasicCardEffect(
+                    card,
+                    localPlayer,
+                    gameManager.propertiesState
+                );
+            
+                if (result?.bankrupt) {
+                    cardModal.classList.add('hidden');
+                    currentCard = null;
+                
+                    try {
+                        await handleBankruptcyInCloud(
+                            currentRoomId,
+                            localPlayer.id,
+                            null,
+                            result.message
+                        );
+                    } catch (error) {
+                        console.error(
+                            "Error al procesar la bancarrota por reparaciones:",
+                            error
+                        );
+                        alert( "No se pudo procesar la bancarrota." );
+                    }
+                    return;
+                }
+
+                message = result;
+
+                await syncPlayerToRoom(
+                    currentRoomId,
+                    localPlayer
+                );
+            } else if (basicCardTypes.includes(card.type)) {
 
                 message = applyBasicCardEffect( card, localPlayer, gameManager.propertiesState );
 

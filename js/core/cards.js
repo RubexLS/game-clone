@@ -92,9 +92,11 @@ export function applyBasicCardEffect(card, player, propertiesState = {} ) {
             }
 
             if (player.money < totalCost) {
-                throw new Error(
-                    `${player.name} no tiene suficiente dinero para pagar las reparaciones ($${totalCost}).`
-                );
+                return {
+                    bankrupt: true,
+                    totalCost,
+                    message: `${player.name} no pudo pagar $${totalCost} ` + `por las reparaciones de sus propiedades.`
+                };
             }
 
             player.money -= totalCost;
