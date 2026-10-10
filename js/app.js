@@ -1182,30 +1182,24 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     const btnEndTurn = document.getElementById('btn-end-turn');
+
     btnEndTurn?.addEventListener('click', async () => {
         if (btnEndTurn.disabled) return;
         btnEndTurn.disabled = true;
 
         try {
-            // Llamamos a nuestra función de red limpia sin importar ref ni get aquí
-            const roomData = await getRoomSnapshot(currentRoomId);
-            
-            if (roomData) {
-                const playerUidsOrder = Object.keys(roomData.players || {});
-                const gameplay = roomData.gameplay || {};
-
-                // Calculamos el índice del siguiente jugador de forma circular
-                const nextTurnIndex = (gameplay.currentTurnIndex + 1) % playerUidsOrder.length;
-                
-                const nextPlayerName = roomData.players[playerUidsOrder[nextTurnIndex]]?.name || "Siguiente jugador";
-                const endTurnMessage = `--- ${localPlayer.name} terminó su turno. Ahora es el turno de ${nextPlayerName}. ---`;
-
-                // Enviamos el nuevo índice a Firebase
-                await endTurnInCloud(currentRoomId, nextTurnIndex, endTurnMessage);
-            }
+            await endTurnInCloud(currentRoomId, localPlayer.id);
         } catch (err) {
             console.error("Error al pasar el turno:", err);
-            btnEndTurn.disabled = false;
+
+            // La interfaz se sincronizará de nuevo con Firebase. No habilitar el botón si ya no corresponde al jugador.
+            const roomData = await getRoomSnapshot(currentRoomId).catch(() => null);
+
+            if ( roomData && roomData.meta?.status !== "finished" && roomData.gameplay?.turnStatus === "awaiting-end" ) {
+                const playerUidsOrder = Object.keys(roomData.players || {});
+                const activeTurnUid = playerUidsOrder[roomData.gameplay.currentTurnIndex];
+                btnEndTurn.disabled = activeTurnUid !== localPlayer.id;
+            }
         }
     });
 
