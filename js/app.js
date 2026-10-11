@@ -231,15 +231,14 @@ document.addEventListener('DOMContentLoaded', () => {
         const gameplay = roomData.gameplay || {};
         const gameFinished = roomData.meta?.status === "finished";
 
-        if (gameFinished) {
-            if (btnRollDice) btnRollDice.disabled = true;
-            if (btnEndTurn) btnEndTurn.disabled = true;
-            if (buyModal) buyModal.classList.add('hidden');
-            if (gameWinnerMessage) gameWinnerMessage.classList.remove('hidden');
-            if (winnerNameElement) winnerNameElement.textContent = `🏆 ${roomData.meta?.winnerName || "Jugador desconocido"} ha ganado la partida.`;
-
-            return;
-        }
+        // Eliminar las fichas e instancias de jugadores que ya no están en Firebase
+        Object.keys(activePlayersList).forEach((uid) => {
+            if (!cloudPlayers[uid]) {
+                const token = document.getElementById(`token-${uid}`);
+                if (token) token.remove();
+                delete activePlayersList[uid];
+            }
+        });
 
         // Sincronizar el registro de compras con nuestro gestor de reglas local
         gameManager.propertiesState = roomData.properties || {};
@@ -320,6 +319,18 @@ document.addEventListener('DOMContentLoaded', () => {
             logMessages.scrollTop = logMessages.scrollHeight;
         }
         
+        if (gameFinished) {
+            if (btnRollDice) btnRollDice.disabled = true;
+            if (btnEndTurn) btnEndTurn.disabled = true;
+            if (buyModal) buyModal.classList.add('hidden');
+            if (gameWinnerMessage) gameWinnerMessage.classList.remove('hidden');
+            if (winnerNameElement) winnerNameElement.textContent = `🏆 ${roomData.meta?.winnerName || "Jugador desconocido"} ha ganado la partida.`;
+            if (jailPanel) jailPanel.classList.add('hidden');
+            if (currentTurnInfo) currentTurnInfo.textContent = "Partida finalizada.";
+
+            return;
+        }
+
         //opciones en la carcel
         if ( localPlayer && localPlayer.isJailed && activeTurnUid === localPlayer.id ) {
             jailPanel.classList.remove('hidden');

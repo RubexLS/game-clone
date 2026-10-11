@@ -1,4 +1,3 @@
 # --- Seguridad y Credenciales ---
 # Se ocultan por completo los módulos de configuración y servicios de red
 js/config/
-js/services/
