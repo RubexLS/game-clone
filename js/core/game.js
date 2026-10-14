@@ -315,7 +315,7 @@ export class GameManager {
                 )
                 : 0;
 
-        if (houses - 1 < maximumOtherHouses) {
+        if (houses < maximumOtherHouses) {
             return {
                 allowed: false,
                 message:

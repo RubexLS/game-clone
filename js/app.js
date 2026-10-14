@@ -155,10 +155,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 error
             );
         
-            alert(
-                "Error al crear la sala: " +
-                (error?.message || error)
-            );
+            // Evitar conservar un código local si la creación no se completó.
+            currentRoomId = null;
+            localPlayer = null;
+
+            if (error?.code === "ROOM_ALREADY_EXISTS") {
+                alert("Ese código de sala ya existe. Elige otro código o únete a la sala existente.");
+            } else {
+                alert(
+                    "Error al crear la sala: " +
+                    (error?.message || error)
+                );
+            }
         }
     });
 
@@ -273,6 +281,21 @@ document.addEventListener('DOMContentLoaded', () => {
             });
 
             activePlayersList[uid].properties = playerProperties;
+
+            // Mantiene sincronizada la instancia del jugador local con los datos más recientes recibidos desde Firebase.
+            if (localPlayer && localPlayer.id === uid) {
+                localPlayer.money = pData.money;
+                localPlayer.position = pData.position;
+                localPlayer.isJailed = pData.isJailed;
+                localPlayer.jailTurns = pData.jailTurns || 0;
+                localPlayer.getOutOfJailFreeCards = pData.getOutOfJailFreeCards || 0;
+                localPlayer.properties = [...playerProperties];
+            }
+
+            // Mantener sincronizadas las propiedades de la instancia del jugador local.
+            if (localPlayer && uid === localPlayer.id) {
+                localPlayer.properties = [...playerProperties];
+            }
 
             // Renderizar la tarjeta del jugador en el panel lateral izquierdo
             const playerCard = document.createElement('div');
@@ -607,15 +630,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     const message = `${localPlayer.name} sacó dobles ` + `(${die1} y ${die2}) y salió de la cárcel. ` + `Avanzó a la casilla ${localPlayer.position}.`;
 
+                    await syncPlayerToRoom(
+                        currentRoomId,
+                        localPlayer
+                    );
+                    
                     await updateDiceResult(
                         currentRoomId,
                         [die1, die2],
                         message
-                    );
-
-                    await syncPlayerToRoom(
-                        currentRoomId,
-                        localPlayer
                     );
 
                     await setTurnStatus(
@@ -708,17 +731,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
 
+            // Sincronizar jugador
+            await syncPlayerToRoom(
+                currentRoomId,
+                localPlayer
+            );
+
             // Guardar dados y movimiento en Firebase
             await updateDiceResult(
                 currentRoomId,
                 [die1, die2],
                 message
-            );
-
-            // Sincronizar jugador
-            await syncPlayerToRoom(
-                currentRoomId,
-                localPlayer
             );
 
             console.log( "Casilla de aterrizaje:", currentLandingSquare );
@@ -988,15 +1011,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const propertyId = currentLandingSquare.id;
         const hotelCost = currentLandingSquare.hotelCost;
+        const propertyInfo = gameManager.propertiesState?.[propertyId];
         const validation = gameManager.canBuildOnProperty( localPlayer, propertyId );
+        const readyForHotel = propertyInfo?.houses === 4 && !propertyInfo?.hotel && validation.message === "Esta propiedad tiene 4 casas. Puede convertirse en hotel.";
 
-        if (!validation.allowed) {
+        if (!validation.allowed && !readyForHotel) {
             alert(validation.message);
             return;
         }
 
         // Obtener el estado actual de la propiedad desde Firebase
-        const propertyInfo = gameManager.propertiesState?.[propertyId];
         const buildings = {
             houses: propertyInfo?.houses || 0,
             hotel: propertyInfo?.hotel || false

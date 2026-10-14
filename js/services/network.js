@@ -3,33 +3,48 @@ import { ref, set, update, onValue, off, get, runTransaction } from "https://www
 import { BOARD_SQUARES } from '../core/board.js';
 
 // Crea una nueva sala de juego en Firebase con un ID único
-export function createGameRoom(roomId, hostId) {
+// runTransaction evita sobrescribir una sala si dos usuarios intentan
+// crear el mismo código casi al mismo tiempo.
+export async function createGameRoom(roomId, hostId) {
     const roomRef = ref(db, `rooms/${roomId}`);
     
     // Estado inicial de una partida en la nube
     const initialGameState = {
         meta: {
             id: roomId,
-            hostId: hostId,
+            hostId,
             createdAt: Date.now(),
             status: "waiting" // waiting, playing, finished
         },
         gameplay: {
             currentTurnIndex: 0,
             turnStatus: "waiting-roll",
-            dice:[0, 0],
+            dice: [0, 0],
             lastAction: "Sala creada"
         },
         players: {},      // Se llenará dinámicamente al unirse los jugadores
         properties: {}    // Estructura: { squareId: { ownerId, houses } }
     };
 
-    return set(roomRef, initialGameState)
-        .then(() => console.log(`Sala ${roomId} creada con éxito en la nube.`))
-        .catch((error) => {
-            console.error("Error al crear la sala:", error);
+    try {
+        const result = await runTransaction(roomRef, (currentRoom) => {
+            // Devolver undefined cancela la transacción y conserva la sala existente.
+            if (currentRoom !== null) return;
+            return initialGameState;
+        }, { applyLocally: false });
+
+        if (!result.committed) {
+            const error = new Error(`El código de sala "${roomId}" ya existe. Elige otro código.`);
+            error.code = "ROOM_ALREADY_EXISTS";
             throw error;
-        });
+        }
+
+        console.log(`Sala ${roomId} creada con éxito en la nube.`);
+        return result.snapshot.val();
+    } catch (error) {
+        console.error("Error al crear la sala:", error);
+        throw error;
+    }
 }
 
 /**
@@ -76,237 +91,345 @@ export function listenToRoom(roomId, callback) {
 
 //Actualiza el resultado de los dados y las posiciones globales en la base de datos
 export function updateDiceResult(roomId, diceValues, statusText) {
-    const gameplayRef = ref(db, `rooms/${roomId}/gameplay`);
-    return update(gameplayRef, {
-        dice: diceValues,
-        lastAction: statusText,
-        turnStatus: "awaiting-end"
+    const roomRef = ref(db, `rooms/${roomId}`);
+
+    return update(roomRef, {
+        "gameplay/dice": diceValues,
+        "gameplay/lastAction": statusText,
+        "gameplay/turnStatus": "awaiting-end",
+        "meta/status": "playing"
     });
 }
 
 //Guarda la compra de una propiedad en la base de datos de Firebase
 export function buyPropertyInCloud(roomId, squareId, playerId, propertyPrice, logMessage) {
     const roomRef = ref(db, `rooms/${roomId}`);
-    let purchaseApplied = false;
+
+    // Validar el identificador de la casilla.
+    const numericSquareId = Number(squareId);
+
+    if ( !Number.isInteger(numericSquareId) || numericSquareId < 0 || numericSquareId >= BOARD_SQUARES.length ) {
+        return Promise.reject( new Error("La casilla seleccionada no es válida.") );
+    }
+
+    // El precio real se obtiene del tablero, no del navegador.
+    const boardSquare = BOARD_SQUARES.find( square => square.id === numericSquareId );
+
+    if ( !boardSquare || !["property", "railroad", "utility"].includes(boardSquare.type) || !Number.isFinite(boardSquare.price) || boardSquare.price < 0 ) {
+        return Promise.reject( new Error("Esta casilla no se puede comprar.") );
+    }
+
+    const authoritativePrice = boardSquare.price;
 
     return runTransaction(roomRef, (roomData) => {
         if (!roomData) return;
 
+        // No comprar en salas que esperan jugadores o ya finalizaron.
+        if (roomData.meta?.status !== "playing") return;
+
+        const gameplay = roomData.gameplay || {};
+
+        // La compra solo se permite después de la tirada del turno.
+        if (gameplay.turnStatus !== "awaiting-end") return;
+
         const players = roomData.players || {};
         const properties = roomData.properties || {};
         const player = players[playerId];
-        const property = properties[squareId];
 
-        // El jugador debe existir
         if (!player) return;
-        // La propiedad debe seguir libre
-        if (property) return;
-        // El jugador debe tener suficiente dinero
-        if (player.money < propertyPrice) return;
 
-        // Descontar el precio
-        player.money -= propertyPrice;
+        // Comprobar que sea el jugador del turno activo.
+        const playerIds = Object.keys(players);
+        const currentTurnIndex = gameplay.currentTurnIndex ?? 0;
 
-        // Registrar propietario y edificios iniciales
-        properties[squareId] = {
+        if ( !Number.isInteger(currentTurnIndex) || currentTurnIndex < 0 || currentTurnIndex >= playerIds.length ) {
+            return;
+        }
+
+        const activePlayerId = playerIds[currentTurnIndex];
+
+        if (activePlayerId !== playerId) return;
+        // La propiedad debe seguir libre.
+        if (properties[numericSquareId]) return;
+        // El saldo debe ser válido y suficiente.
+        if ( !Number.isFinite(player.money) || player.money < authoritativePrice ) return;
+
+        // Aplicar la compra dentro de la transacción.
+        player.money -= authoritativePrice;
+
+        properties[numericSquareId] = {
             ownerId: playerId,
             houses: 0,
             hotel: false
         };
 
-        // Guardar cambios
         roomData.players = players;
         roomData.properties = properties;
-
-        if (!roomData.gameplay) roomData.gameplay = {};
-
-        roomData.gameplay.lastAction = logMessage;
-        purchaseApplied = true;
-
+        roomData.gameplay.lastAction = typeof logMessage === "string" ? logMessage : `${player.name} compró ${boardSquare.name}.`;
         return roomData;
     }).then((result) => {
-        if (!purchaseApplied || !result.committed) {
-            throw new Error(
-                "No se pudo completar la compra de la propiedad."
-            );
+        if (!result.committed) {
+            throw new Error( "Compra rechazada: revisa el turno, el saldo y la disponibilidad." );
         }
 
-        console.log( "Propiedad comprada correctamente en Firebase." );
+        console.log("Propiedad comprada correctamente en Firebase.");
         return result.snapshot.val();
     });
 }
 
 export function mortgagePropertyInCloud( roomId, propertyId, playerId, mortgageValue, logMessage ) {
     const roomRef = ref(db, `rooms/${roomId}`);
-    let mortgageApplied = false;
+    const numericPropertyId = Number(propertyId);
+    const boardProperty = BOARD_SQUARES.find(square => square.id === numericPropertyId);
+
+    if (!boardProperty || !["property", "railroad", "utility"].includes(boardProperty.type) || !Number.isFinite(boardProperty.price) || boardProperty.price < 0) {
+        return Promise.reject(new Error("La casilla no admite hipotecas."));
+    }
+
+    // El importe enviado por el cliente no es confiable.
+    const authoritativeValue = Math.floor(boardProperty.price / 2);
 
     return runTransaction(roomRef, (roomData) => {
         if (!roomData) return;
+        if (roomData.meta?.status !== "playing") return;
+
+        const gameplay = roomData.gameplay || {};
+
+        if (gameplay.turnStatus !== "awaiting-end") return;
 
         const players = roomData.players || {};
         const properties = roomData.properties || {};
         const player = players[playerId];
-        const property = properties[propertyId];
 
         if (!player) return;
-        if (!property) return;
-        // La propiedad debe pertenecer al jugador.
-        if (property.ownerId !== playerId) return;
-        // No se puede hipotecar dos veces.
+
+        // Validar que sea el turno del jugador.
+        const playerIds = Object.keys(players);
+        const turnIndex = gameplay.currentTurnIndex ?? 0;
+
+        if (!Number.isInteger(turnIndex) || turnIndex < 0 || turnIndex >= playerIds.length || playerIds[turnIndex] !== playerId) {
+            return;
+        }
+
+        const property = properties[numericPropertyId];
+
+        if (!property || property.ownerId !== playerId) return;
         if (property.mortgaged) return;
 
-        const boardProperty = BOARD_SQUARES.find( square => square.id === Number(propertyId) );
-
-        if (!boardProperty) return;
-        if (boardProperty.type === 'property') {
+        // No se puede hipotecar si hay construcciones en alguna propiedad del grupo de color.
+        if (boardProperty.type === "property") {
             const groupProperties = BOARD_SQUARES.filter(
                 square =>
-                    square.type === 'property' &&
+                    square.type === "property" &&
                     square.group === boardProperty.group
             );
-        
-            const hasBuildingsInGroup = groupProperties.some(groupProperty => {
-                const groupBuilding = properties[groupProperty.id] || {};
-                const houses = groupBuilding.houses || 0;
-                const hotel = groupBuilding.hotel || false;
-                return houses > 0 || hotel;
-            });
-            
+
+            const hasBuildingsInGroup = groupProperties.some(
+                square => { const building = properties[square.id] || {};
+
+                    return (
+                        (building.houses || 0) > 0 ||
+                        building.hotel === true
+                    );
+                }
+            );
+
             if (hasBuildingsInGroup) return;
         }
 
-        // No se puede hipotecar una propiedad que tenga construcciones.
-        const houses = property.houses || 0;
+        // Validación adicional sobre la propiedad elegida.
+        if ((property.houses || 0) > 0 || property.hotel === true) return;
+        if (!Number.isFinite(player.money)) return;
 
-        if (houses > 0 || property.hotel) return;
-
-        // El banco paga el valor de la hipoteca.
-        player.money += mortgageValue;
-
+        player.money += authoritativeValue;
         property.mortgaged = true;
-
         players[playerId] = player;
-        properties[propertyId] = property;
+        properties[numericPropertyId] = property;
+
         roomData.players = players;
         roomData.properties = properties;
+        roomData.gameplay.lastAction =
+            typeof logMessage === "string" && logMessage.trim()
+                ? logMessage
+                : `🏦 ${player.name} hipotecó ${boardProperty.name} y recibió $${authoritativeValue}.`;
 
-        if (!roomData.gameplay) roomData.gameplay = {};
-
-        roomData.gameplay.lastAction = logMessage;
-        mortgageApplied = true;
         return roomData;
     }).then((result) => {
-        if (!mortgageApplied || !result.committed) {
+        if (!result.committed) {
             throw new Error(
-                "No se pudo hipotecar la propiedad."
+                "Hipoteca rechazada: revisa el turno, la propiedad y las construcciones del grupo."
             );
         }
 
-        console.log( "Propiedad hipotecada correctamente en Firebase." );
+        console.log("Propiedad hipotecada correctamente en Firebase.");
         return result.snapshot.val();
     });
 }
 
 export function unmortgagePropertyInCloud( roomId, propertyId, playerId, unmortgageCost, logMessage ) {
     const roomRef = ref(db, `rooms/${roomId}`);
-    let unmortgageApplied = false;
+    const numericPropertyId = Number(propertyId);
+    const boardProperty = BOARD_SQUARES.find(square => square.id === numericPropertyId);
+
+    if (!boardProperty || !["property", "railroad", "utility"].includes(boardProperty.type) || !Number.isFinite(boardProperty.price) || boardProperty.price < 0) {
+        return Promise.reject(new Error("La casilla no admite deshipotecas."));
+    }
+
+    const mortgageValue = Math.floor(boardProperty.price / 2);
+    const authoritativeCost = Math.ceil(mortgageValue * 1.1);
 
     return runTransaction(roomRef, (roomData) => {
         if (!roomData) return;
+        if (roomData.meta?.status !== "playing") return;
+
+        const gameplay = roomData.gameplay || {};
+
+        if (gameplay.turnStatus !== "awaiting-end") return;
 
         const players = roomData.players || {};
         const properties = roomData.properties || {};
         const player = players[playerId];
-        const property = properties[propertyId];
 
         if (!player) return;
-        if (!property) return;
-        // Verificar propietario
-        if (property.ownerId !== playerId) return;
-        // Solo se puede deshipotecar una propiedad hipotecada
-        if (!property.mortgaged) return;
-        // Verificar dinero suficiente
-        if (player.money < unmortgageCost) return;
 
-        player.money -= unmortgageCost;
-        property.mortgaged = false;
+        // Validar que sea el turno del jugador.
+        const playerIds = Object.keys(players);
+        const turnIndex = gameplay.currentTurnIndex ?? 0;
 
-        players[playerId] = player;
-        properties[propertyId] = property;
-        roomData.players = players;
-        roomData.properties = properties;
-
-        if (!roomData.gameplay) roomData.gameplay = {};
-
-        roomData.gameplay.lastAction = logMessage;
-        unmortgageApplied = true;
-        return roomData;
-    }).then((result) => {
-        if (!unmortgageApplied || !result.committed) {
-            throw new Error(
-                "No se pudo deshipotecar la propiedad."
-            );
+        if (!Number.isInteger(turnIndex) || turnIndex < 0 || turnIndex >= playerIds.length || playerIds[turnIndex] !== playerId) {
+            return;
         }
 
-        console.log( "Propiedad deshipotecada correctamente en Firebase." );
+        const property = properties[numericPropertyId];
+
+        if (!property || property.ownerId !== playerId) return;
+        if (property.mortgaged !== true) return;
+        if (!Number.isFinite(player.money) || player.money < authoritativeCost) return;
+
+        player.money -= authoritativeCost;
+        property.mortgaged = false;
+        players[playerId] = player;
+        properties[numericPropertyId] = property;
+
+        roomData.players = players;
+        roomData.properties = properties;
+        roomData.gameplay.lastAction =
+            typeof logMessage === "string" && logMessage.trim()
+                ? logMessage
+                : `🏦 ${player.name} deshipotecó ${boardProperty.name} por $${authoritativeCost}.`;
+
+        return roomData;
+    }).then((result) => {
+        if (!result.committed) {
+            throw new Error("Deshipoteca rechazada: revisa el turno, el saldo y el estado de la propiedad.");
+        }
+
+        console.log("Propiedad deshipotecada correctamente en Firebase.");
         return result.snapshot.val();
     });
 }
 
 export function buildHouseInCloud( roomId, propertyId, playerId, houseCost, logMessage ) {
     const roomRef = ref(db, `rooms/${roomId}`);
-    let buildApplied = false;
+    const numericPropertyId = Number(propertyId);
+    const boardProperty = BOARD_SQUARES.find( square => square.id === numericPropertyId );
+
+    // La casilla debe ser una propiedad edificable.
+    if (!boardProperty || boardProperty.type !== "property" || !Number.isFinite(boardProperty.houseCost) || boardProperty.houseCost < 0) {
+        return Promise.reject( new Error("La propiedad no admite construcción.") );
+    }
+
+    // El coste real procede del tablero.
+    const authoritativeCost = boardProperty.houseCost;
 
     return runTransaction(roomRef, (roomData) => {
         if (!roomData) return;
 
+        // La partida debe estar en curso.
+        if (roomData.meta?.status !== "playing") return;
+
+        const gameplay = roomData.gameplay || {};
+
+        // La tirada debe haberse realizado y el turno seguir activo.
+        if (gameplay.turnStatus !== "awaiting-end") return;
+
         const players = roomData.players || {};
         const properties = roomData.properties || {};
         const player = players[playerId];
-        const property = properties[propertyId];
 
-        // El jugador debe existir
         if (!player) return;
-        // La propiedad debe existir
-        if (!property) return;
-        // El jugador debe ser el propietario
-        if (property.ownerId !== playerId) return;
-        // No se puede construir sobre un hotel
+
+        // Comprobar que el jugador tiene el turno.
+        const playerIds = Object.keys(players);
+        const turnIndex = gameplay.currentTurnIndex ?? 0;
+
+        if ( !Number.isInteger(turnIndex) || turnIndex < 0 || turnIndex >= playerIds.length || playerIds[turnIndex] !== playerId ) {
+            return;
+        }
+
+        const property = properties[numericPropertyId];
+
+        if (!property || property.ownerId !== playerId) return;
+        if (property.mortgaged) return;
         if (property.hotel) return;
 
-        const houses = property.houses || 0;
+        const houses = property.houses ?? 0;
 
-        // Máximo de 4 casas
-        if (houses >= 4) return;
-        // Verificar dinero dentro de Firebase
-        if (player.money < houseCost) return;
+        if ( !Number.isInteger(houses) || houses < 0 || houses >= 4 ) return;
+        if ( !Number.isFinite(player.money) || player.money < authoritativeCost ) return;
 
-        // Descontar el precio de la casa
-        player.money -= houseCost;
-        // Construir la casa
+        // Obtener todas las propiedades del mismo grupo.
+        const groupProperties = BOARD_SQUARES.filter(
+            square =>
+                square.type === "property" &&
+                square.group === boardProperty.group
+        );
+
+        if (groupProperties.length === 0) return;
+
+        const groupBuildings = groupProperties.map(square => { return properties[square.id]; });
+
+        // Debe poseer todo el grupo y ninguna propiedad del grupo puede estar hipotecada.
+        if (
+            groupBuildings.some(
+                building =>
+                    !building ||
+                    building.ownerId !== playerId ||
+                    building.mortgaged ||
+                    building.hotel
+            )
+        ) {
+            return;
+        }
+
+        // No se puede construir si esta propiedad ya tiene más casas que alguna de las otras del grupo.
+        const minimumHouses = Math.min(
+            ...groupBuildings.map(
+                building => building.houses ?? 0
+            )
+        );
+
+        if (houses > minimumHouses) return;
+
+        // Aplicar el coste y la construcción dentro de la misma transacción.
+        player.money -= authoritativeCost;
         property.houses = houses + 1;
-
-        // Asegurar que exista el campo hotel
-        if (property.hotel === undefined) property.hotel = false;
-
-        properties[propertyId] = property;
         players[playerId] = player;
+        properties[numericPropertyId] = property;
+
         roomData.players = players;
         roomData.properties = properties;
-
-        if (!roomData.gameplay) roomData.gameplay = {};
-
-        roomData.gameplay.lastAction = logMessage;
-        buildApplied = true;
+        roomData.gameplay.lastAction = typeof logMessage === "string" ? logMessage : `${player.name} construyó una casa en ${boardProperty.name}.`;
         return roomData;
     }).then((result) => {
-        if (!buildApplied || !result.committed) {
+        if (!result.committed) {
             throw new Error(
-                "No se pudo construir la casa en Firebase."
+                "Construcción rechazada: revisa el turno, " +
+                "el saldo, la propiedad y las reglas del grupo."
             );
         }
 
-        console.log( "Casa construida correctamente en Firebase." );
+        console.log("Casa construida correctamente en Firebase.");
         return result.snapshot.val();
     });
 }
@@ -362,7 +485,7 @@ export function sellHouseInCloud( roomId, propertyId, playerId, sellValue, logMe
                 );
             }, 0);
         
-        if (houses - 1 < maximumOtherHouses) return;
+        if (houses < maximumOtherHouses) return;
 
         player.money += sellValue;
         property.houses = houses - 1;
@@ -390,101 +513,195 @@ export function sellHouseInCloud( roomId, propertyId, playerId, sellValue, logMe
 
 export function sellHotelInCloud( roomId, propertyId, playerId, sellValue, logMessage ) {
     const roomRef = ref(db, `rooms/${roomId}`);
-    let sellApplied = false;
+    const numericPropertyId = Number(propertyId);
+    const boardProperty = BOARD_SQUARES.find( square => square.id === numericPropertyId );
+
+    if (!boardProperty || boardProperty.type !== "property" || !Number.isFinite(boardProperty.hotelCost) || boardProperty.hotelCost < 0) {
+        return Promise.reject(new Error("La propiedad no admite la venta de hoteles."));
+    }
+
+    // El reembolso no depende del importe enviado por el cliente.
+    const authoritativeSellValue = Math.floor(boardProperty.hotelCost / 2);
 
     return runTransaction(roomRef, (roomData) => {
         if (!roomData) return;
+        if (roomData.meta?.status !== "playing") return;
+
+        const gameplay = roomData.gameplay || {};
+
+        if (gameplay.turnStatus !== "awaiting-end") return;
 
         const players = roomData.players || {};
         const properties = roomData.properties || {};
         const player = players[playerId];
-        const property = properties[propertyId];
 
         if (!player) return;
-        if (!property) return;
-        if (property.ownerId !== playerId) return;
-        if (property.mortgaged) return;
-        if (!property.hotel) return;
 
-        player.money += sellValue;
+        // Comprobar que sea el turno del jugador.
+        const playerIds = Object.keys(players);
+        const turnIndex = gameplay.currentTurnIndex ?? 0;
+
+        if (!Number.isInteger(turnIndex) || turnIndex < 0 || turnIndex >= playerIds.length || playerIds[turnIndex] !== playerId) {
+            return;
+        }
+
+        const property = properties[numericPropertyId];
+
+        if (!property || property.ownerId !== playerId) return;
+        if (property.mortgaged) return;
+        if (property.hotel !== true) return;
+
+        if (!Number.isFinite(player.money) || !Number.isFinite(authoritativeSellValue)) return;
+
+        // Obtener todas las propiedades del mismo grupo.
+        const groupProperties = BOARD_SQUARES.filter(
+            square =>
+                square.type === "property" &&
+                square.group === boardProperty.group
+        );
+
+        if (groupProperties.length === 0) return;
+
+        // El jugador debe poseer todo el grupo y ninguna propiedad del grupo puede estar hipotecada.
+        const groupBuildings = groupProperties.map(square => ({square, state: properties[square.id]}));
+
+        if (
+            groupBuildings.some(({ square, state }) =>
+                !state || state.ownerId !== playerId || state.mortgaged
+            )
+        ) {
+            return;
+        }
+
+        // Tras vender el hotel, esta propiedad vuelve a tener cuatro casas. Las demás deben tener cuatro casas y no tener hotel para mantener el grupo equilibrado.
+        const otherProperties = groupBuildings.filter(({ square }) => square.id !== numericPropertyId);
+
+        if (otherProperties.some(({ state }) => state.hotel === true || (state.houses || 0) !== 4)) {
+            return;
+        }
+
+        // Aplicar el reembolso y la conversión en la misma transacción de Firebase.
+        player.money += authoritativeSellValue;
 
         property.hotel = false;
         property.houses = 4;
         players[playerId] = player;
-        properties[propertyId] = property;
+        properties[numericPropertyId] = property;
 
         roomData.players = players;
         roomData.properties = properties;
+        roomData.gameplay.lastAction =
+            typeof logMessage === "string" && logMessage.trim()
+                ? logMessage
+                : `🏨 ${player.name} vendió el hotel de ` + `${boardProperty.name} y recibió ` + `$${authoritativeSellValue}.`;
 
-        if (!roomData.gameplay) roomData.gameplay = {};
-
-        roomData.gameplay.lastAction = logMessage;
-        sellApplied = true;
         return roomData;
     }).then((result) => {
-        if (!sellApplied || !result.committed) {
+        if (!result.committed) {
             throw new Error(
-                "No se pudo vender el hotel."
+                "Venta rechazada: revisa el turno, la propiedad, " +
+                "el grupo y el estado de la partida."
             );
         }
 
-        console.log( "Hotel vendido correctamente en Firebase." );
+        console.log("Hotel vendido correctamente en Firebase.");
         return result.snapshot.val();
     });
 }
 
 export function buildHotelInCloud( roomId, propertyId, playerId, hotelCost, logMessage ) {
     const roomRef = ref(db, `rooms/${roomId}`);
-    let buildApplied = false;
+    const numericPropertyId = Number(propertyId);
+    const boardProperty = BOARD_SQUARES.find( square => square.id === numericPropertyId );
+
+    if (!boardProperty || boardProperty.type !== "property" || !Number.isFinite(boardProperty.hotelCost) || boardProperty.hotelCost < 0) {
+        return Promise.reject( new Error("La propiedad no admite la construcción de hoteles.") );
+    }
+
+    const authoritativeCost = boardProperty.hotelCost;
 
     return runTransaction(roomRef, (roomData) => {
         if (!roomData) return;
+        if (roomData.meta?.status !== "playing") return;
+
+        const gameplay = roomData.gameplay || {};
+
+        if (gameplay.turnStatus !== "awaiting-end") return;
 
         const players = roomData.players || {};
         const properties = roomData.properties || {};
         const player = players[playerId];
-        const property = properties[propertyId];
 
-        // El jugador debe existir
         if (!player) return;
-        // La propiedad debe existir
-        if (!property) return;
-        // El jugador debe ser el propietario
-        if (property.ownerId !== playerId) return;
-        // No se puede construir otro hotel
+
+        // Validar que sea el turno del jugador.
+        const playerIds = Object.keys(players);
+        const turnIndex = gameplay.currentTurnIndex ?? 0;
+
+        if (!Number.isInteger(turnIndex) || turnIndex < 0 || turnIndex >= playerIds.length || playerIds[turnIndex] !== playerId) {
+            return;
+        }
+
+        // Validar propiedad y titularidad.
+        const property = properties[numericPropertyId];
+
+        if (!property || property.ownerId !== playerId) return;
+        if (property.mortgaged) return;
         if (property.hotel) return;
+        if (property.houses !== 4) return;
 
-        const houses = property.houses || 0;
+        // Identificar todas las propiedades del mismo grupo.
+        const groupProperties = BOARD_SQUARES.filter( square =>
+                square.type === "property" &&
+                square.group === boardProperty.group
+        );
 
-        // Se necesitan 4 casas
-        if (houses < 4) return;
-        // Verificar dinero dentro de Firebase
-        if (player.money < hotelCost) return;
+        if (groupProperties.length === 0) return;
 
-        // Descontar el precio del hotel
-        player.money -= hotelCost;
-        // Convertir las 4 casas en hotel
+        const groupBuildings = groupProperties.map( square => properties[square.id] );
+
+        // Debe poseer todo el grupo y no tener propiedades hipotecadas.
+        if (groupBuildings.some( building =>
+            !building || building.ownerId !== playerId || building.mortgaged
+        )) return;
+
+        // Para construir el hotel, las demás propiedades del grupo deben tener cuatro casas o un hotel.
+        if (
+            groupProperties.some((square, index) => {
+                const building = groupBuildings[index];
+
+                if (square.id === numericPropertyId) {
+                    return building.hotel || building.houses !== 4;
+                }
+
+                return !building.hotel && building.houses !== 4;
+            })) 
+        {
+            return;
+        }
+
+        // Validar saldo dentro de Firebase.
+        if ( !Number.isFinite(player.money) || player.money < authoritativeCost) return;
+
+        // Aplicar todos los cambios en la misma transacción.
+        player.money -= authoritativeCost;
         property.houses = 0;
         property.hotel = true;
-
-        properties[propertyId] = property;
         players[playerId] = player;
+        properties[numericPropertyId] = property;
+
         roomData.players = players;
         roomData.properties = properties;
-
-        if (!roomData.gameplay) roomData.gameplay = {};
-
-        roomData.gameplay.lastAction = logMessage;
-        buildApplied = true;
+        roomData.gameplay.lastAction = typeof logMessage === "string" && logMessage.trim() ? logMessage : `🏨 ${player.name} construyó un hotel en ${boardProperty.name}.`;
         return roomData;
     }).then((result) => {
-        if (!buildApplied || !result.committed) {
+        if (!result.committed) {
             throw new Error(
-                "No se pudo construir el hotel en Firebase."
+                "Construcción rechazada: revisa el turno, " + "el saldo y las condiciones del grupo."
             );
         }
 
-        console.log( "Hotel construido correctamente en Firebase." );
+        console.log("Hotel construido correctamente en Firebase.");
         return result.snapshot.val();
     });
 }
@@ -752,7 +969,7 @@ export function handleBankruptcyInCloud( roomId, debtorId, creditorId, logMessag
             let adjustedIndex = currentTurnIndex;
 
             // Si el eliminado estaba antes del jugador activo, el índice del jugador activo disminuye en uno.
-            if ( debtorIndex !== -1 && debtorIndex < currentTurnIndex ) djustedIndex--;
+            if ( debtorIndex !== -1 && debtorIndex < currentTurnIndex ) adjustedIndex--;
 
             // Mantener el índice dentro de la lista actual.
             gameplay.currentTurnIndex = ((adjustedIndex % remainingPlayerIds.length) + remainingPlayerIds.length) % remainingPlayerIds.length;
