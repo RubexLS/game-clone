@@ -1,7 +1,7 @@
 import { renderBoard } from './ui/render.js';
 import { Player, drawPlayerToken } from './core/player.js';
 import { loginAnonymously } from './services/auth.js';
-import { createGameRoom, syncPlayerToRoom, listenToRoom, updateDiceResult, buyPropertyInCloud, endTurnInCloud, getRoomSnapshot, payRentInCloud, payTaxInCloud, setTurnStatus, sendPlayerToJailInCloud, payJailFineInCloud, useJailCardInCloud, registerJailAttemptInCloud, buildHouseInCloud, buildHotelInCloud, handleBankruptcyInCloud, mortgagePropertyInCloud, unmortgagePropertyInCloud, sellHouseInCloud, sellHotelInCloud } from './services/network.js';
+import { createGameRoom, syncPlayerToRoom, listenToRoom, updateDiceResult, buyPropertyInCloud, endTurnInCloud, getRoomSnapshot, payRentInCloud, payTaxInCloud, setTurnStatus, sendPlayerToJailInCloud, payJailFineInCloud, useJailCardInCloud, registerJailAttemptInCloud, buildHouseInCloud, buildHotelInCloud, handleBankruptcyInCloud, mortgagePropertyInCloud, unmortgagePropertyInCloud, sellHouseInCloud, sellHotelInCloud, payCardCostInCloud } from './services/network.js';
 import { GameManager } from './core/game.js';
 import { BOARD_SQUARES, getSquareById } from './core/board.js';
 import { CHANCE_CARDS, COMMUNITY_CHEST_CARDS, CardDeck, applyBasicCardEffect, applyPlayerInteractionCardEffect, applySpecialCardEffect } from './core/cards.js';
@@ -844,24 +844,30 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                     const rentResult = await payRentInCloud(
                         currentRoomId,
+                        currentLandingSquare.id,
                         localPlayer.id,
                         ownerId,
-                        rentCost,
                         rentMessage
                     );
 
-                    if (rentResult.bankrupt) {
-                        const bankruptcyMessage = `¡${localPlayer.name} no pudo pagar ` + `el alquiler de $${rentCost}! ` + `Ha quedado en bancarrota.`;
+                    if (rentResult.bankrupt) {                    
+                        const bankruptcyMessage =`¡${localPlayer.name} no pudo pagar el alquiler de ${currentLandingSquare.name} y ha quedado en bancarrota.`;
 
-                        await handleBankruptcyInCloud(
-                            currentRoomId,
-                            localPlayer.id,
-                            ownerId,
-                            bankruptcyMessage
-                        );
-                    
-                        buyModal?.classList.add('hidden');
-                        return;
+                        try {
+                            await handleBankruptcyInCloud(
+                                currentRoomId,
+                                localPlayer.id,
+                                ownerId,
+                                bankruptcyMessage
+                            );
+                        
+                            buyModal?.classList.add('hidden');
+                            return;
+                        } catch (error) {
+                            console.error("Error al procesar la bancarrota por alquiler:", error);
+                            alert("No se pudo procesar la bancarrota por alquiler.");
+                            return;
+                        }
                     }
                 }
             }

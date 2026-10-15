@@ -1,6 +1,131 @@
 import { db } from '../config/firebase.js';
 import { ref, set, update, onValue, off, get, runTransaction } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-database.js";
 import { BOARD_SQUARES } from '../core/board.js';
+import { CHANCE_CARDS, COMMUNITY_CHEST_CARDS } from '../core/cards.js';
+
+function getCardPaymentDetails(roomData, playerId, deckType, cardId) {
+    if (!roomData || roomData.meta?.status !== "playing" || roomData.gameplay?.turnStatus !== "awaiting-end") {
+        return null;
+    }
+
+    const players = roomData.players || {};
+    const player = players[playerId];
+    const playerIds = Object.keys(players);
+    const turnIndex = roomData.gameplay.currentTurnIndex ?? 0;
+
+    if (
+        !player ||
+        !Number.isFinite(player.money) ||
+        !Number.isInteger(turnIndex) ||
+        turnIndex < 0 ||
+        turnIndex >= playerIds.length ||
+        playerIds[turnIndex] !== playerId
+    ) return null;
+
+    const decks = {chance: CHANCE_CARDS, community: COMMUNITY_CHEST_CARDS};
+    const deck = decks[deckType];
+
+    if (!deck || !Number.isInteger(Number(cardId))) return null;
+
+    const card = deck.find(item => item.id === Number(cardId));
+
+    if (!card || !["pay_money", "property_tax"].includes(card.type)) return null;
+
+    let cost = 0;
+
+    if (card.type === "pay_money") {
+        if (!Number.isFinite(card.amount) || card.amount < 0) {
+            return null;
+        }
+
+        cost = card.amount;
+    }
+
+    if (card.type === "property_tax") {
+        if (!Number.isFinite(card.houseCost) || card.houseCost < 0 || !Number.isFinite(card.hotelCost) || card.hotelCost < 0) {
+            return null;
+        }
+
+        const properties = roomData.properties || {};
+
+        for (const [propertyId, property] of Object.entries(properties)) {
+            if (property?.ownerId !== playerId) continue;
+
+            const square = BOARD_SQUARES.find(item => item.id === Number(propertyId));
+
+            // Solo las propiedades edificables generan reparaciones.
+            if (!square || square.type !== "property") continue;
+
+            const houses = property.houses ?? 0;
+            const hotel = property.hotel === true;
+
+            if (
+                !Number.isInteger(houses) ||
+                houses < 0 ||
+                houses > 4 ||
+                (hotel && houses !== 0)
+            ) return null;
+
+            cost += hotel? card.hotelCost : houses * card.houseCost;
+        }
+    }
+
+    if (!Number.isFinite(cost) || cost < 0) return null;
+    return { player, card, cost };
+}
+
+export function payCardCostInCloud(roomId, playerId, deckType, cardId ) {
+    const roomRef = ref(db, `rooms/${roomId}`);
+
+    return runTransaction(roomRef, roomData => {
+        const details = getCardPaymentDetails(roomData, playerId, deckType, cardId);
+
+        if (!details || details.player.money < details.cost) return;
+
+        const { player, card, cost } = details;
+
+        roomData.players[playerId] = {
+            ...player,
+            money: player.money - cost
+        };
+
+        roomData.gameplay.lastAction = `${player.name} pagó $${cost} al banco. ${card.text}`;
+        return roomData;
+    }).then(result => {
+        const snapshot = result.snapshot.val();
+
+        if (result.committed) {
+            // La deducción ya se realizó. No recalcular el coste a partir del saldo actualizado.
+            return {
+                success: true,
+                bankrupt: false,
+                snapshot,
+                message: snapshot?.gameplay?.lastAction
+            };
+        }
+
+        // Solo declarar insuficiencia si la carta, el turno y la sala siguen siendo válidos en el estado devuelto por Firebase.
+        const details = getCardPaymentDetails(
+            snapshot,
+            playerId,
+            deckType,
+            cardId
+        );
+
+        if ( details && details.player.money < details.cost ) {
+            return {
+                success: false,
+                bankrupt: true,
+                cost: details.cost,
+                message:
+                    `${details.player.name} no tiene dinero suficiente ` +
+                    `para pagar $${details.cost}.`
+            };
+        }
+
+        throw new Error( "No se pudo procesar el pago. Verifica el turno, la carta y el estado de la sala." );
+    });
+}
 
 // Crea una nueva sala de juego en Firebase con un ID único
 // runTransaction evita sobrescribir una sala si dos usuarios intentan
@@ -706,47 +831,179 @@ export function buildHotelInCloud( roomId, propertyId, playerId, hotelCost, logM
     });
 }
 
-export function payRentInCloud( roomId, payerId, ownerId, rentAmount, logMessage ) {
+export function payRentInCloud( roomId, propertyId, payerId, ownerId, logMessage ) {
+    
     const roomRef = ref(db, `rooms/${roomId}`);
+    const numericPropertyId = Number(propertyId);
+    const boardProperty = BOARD_SQUARES.find(square => square.id === numericPropertyId);
 
-    // Validar el importe antes de iniciar la transacción.
-    if (!Number.isFinite(rentAmount) || rentAmount < 0) {
-        return Promise.reject( new Error("El importe del alquiler no es válido.") );
+    if (!boardProperty || !["property", "railroad", "utility"].includes(boardProperty.type)) {
+        return Promise.reject(new Error("La casilla no admite el cobro de alquiler."));
     }
 
-    return runTransaction(roomRef, (roomData) => {
-        if (!roomData) return;
+    let insufficientFunds = false;
 
-        // No procesar alquileres después de finalizar la partida.
-        if (roomData.meta?.status === "finished") return;
+    return runTransaction(roomRef, (roomData) => {
+        insufficientFunds = false;
+
+        if (!roomData) return;
+        if (roomData.meta?.status !== "playing") return;
+
+        const gameplay = roomData.gameplay || {};
+
+        if (gameplay.turnStatus !== "awaiting-end") return;
 
         const players = roomData.players || {};
+        const properties = roomData.properties || {};
         const payer = players[payerId];
         const owner = players[ownerId];
+        const property = properties[numericPropertyId];
 
-        // Verificar que ambos jugadores existan.
-        if (!payer || !owner) return;
-        // No se permite pagarse alquiler a uno mismo.
+        if (!payer || !owner || !property) return;
         if (payerId === ownerId) return;
-        // Si no alcanza el dinero, cancelar esta transacción sin modificar el saldo de ninguno de los jugadores.
-        if (payer.money < rentAmount) return;
+        if (property.ownerId !== ownerId) return;
 
-        // Transferir el dinero dentro de la misma transacción.
-        payer.money -= rentAmount;
-        owner.money += rentAmount;
+        // Verificar que sea el turno del jugador que paga.
+        const playerIds = Object.keys(players);
+        const turnIndex = gameplay.currentTurnIndex ?? 0;
+
+        if (!Number.isInteger(turnIndex) || turnIndex < 0 || turnIndex >= playerIds.length || playerIds[turnIndex] !== payerId) {
+            return;
+        }
+
+        // Los dados se obtienen del estado de Firebase.
+        const dice = gameplay.dice;
+
+        if (!Array.isArray(dice) || dice.length !== 2 || !dice.every(
+                value =>
+                    Number.isInteger(value) &&
+                    value >= 1 &&
+                    value <= 6
+            )
+        ) return;
+
+        const diceTotal = dice[0] + dice[1];
+
+        // Una propiedad hipotecada no cobra alquiler.
+        let authoritativeRent = 0;
+
+        if (!property.mortgaged) {
+            if (boardProperty.type === "property") {
+                const houses = property.houses || 0;
+                const hasHotel = property.hotel === true;
+                const rentTable = boardProperty.rent;
+
+                if (
+                    !Array.isArray(rentTable) ||
+                    rentTable.length < 6 ||
+                    !Number.isInteger(houses) ||
+                    houses < 0 ||
+                    houses > 4 ||
+                    (hasHotel && houses !== 0)
+                ) return;
+
+                // Hotel: índice 5.
+                if (hasHotel) {
+                    authoritativeRent = rentTable[5];
+                } else if (houses > 0) {
+                    // Una a cuatro casas: índices 1 a 4.
+                    authoritativeRent = rentTable[houses];
+                } else {
+                    // Sin construcciones: doble alquiler si el propietario posee todo el grupo.
+                    const groupProperties = BOARD_SQUARES.filter(
+                        square =>
+                            square.type === "property" &&
+                            square.group === boardProperty.group
+                    );
+
+                    const ownsEntireGroup =
+                        groupProperties.length > 0 &&
+                        groupProperties.every(square => {
+                            const groupProperty =
+                                properties[square.id];
+
+                            return (
+                                groupProperty?.ownerId === ownerId
+                            );
+                        });
+
+                    authoritativeRent = rentTable[0] * (ownsEntireGroup ? 2 : 1);
+                }
+            } else if (boardProperty.type === "railroad") {
+                const railroadCount = BOARD_SQUARES.filter(
+                    square => {
+                        if (square.type !== "railroad") return false;
+                        return (properties[square.id]?.ownerId === ownerId);
+                    }
+                ).length;
+
+                const railroadRents = [0, 25, 50, 100, 200];
+                if (railroadCount < 1 || railroadCount > 4) return;
+                authoritativeRent = railroadRents[railroadCount];
+            } else if (boardProperty.type === "utility") {
+                const utilityCount = BOARD_SQUARES.filter(
+                    square =>
+                        square.type === "utility" &&
+                        properties[square.id]?.ownerId === ownerId
+                ).length;
+
+                if (utilityCount < 1 || utilityCount > 2) return;
+                authoritativeRent =diceTotal * (utilityCount === 1 ? 4 : 10);
+            }
+        }
+
+        if (!Number.isFinite(authoritativeRent) || authoritativeRent < 0 || !Number.isFinite(payer.money) || !Number.isFinite(owner.money)) {
+            return;
+        }
+
+        // Si no tiene dinero suficiente, cancelar sin transferir.
+        if (payer.money < authoritativeRent) {
+            insufficientFunds = true;
+            return;
+        }
+
+        payer.money -= authoritativeRent;
+        owner.money += authoritativeRent;
 
         players[payerId] = payer;
         players[ownerId] = owner;
         roomData.players = players;
 
         if (!roomData.gameplay) roomData.gameplay = {};
-        roomData.gameplay.lastAction = logMessage;
+
+        roomData.gameplay.lastAction =
+            typeof logMessage === "string" && logMessage.trim()
+                ? logMessage
+                : `${payer.name} pagó $${authoritativeRent} de alquiler a ${owner.name} por ${boardProperty.name}.`;
         return roomData;
     }).then((result) => {
         const snapshot = result.snapshot.val();
 
-        // La transferencia se confirmó en Firebase.
         if (result.committed) {
+            return {
+                success: true,
+                bankrupt: false,
+                // rentAmount: snapshot ? undefined : undefined,
+                snapshot
+            };
+        }
+
+        const payer = snapshot?.players?.[payerId];
+        const owner = snapshot?.players?.[ownerId];
+        const property = snapshot?.properties?.[numericPropertyId];
+
+        // Solo reconocer bancarrota si la sala y los jugadores siguen existiendo y la propiedad sigue perteneciendo al arrendador
+        if (
+            insufficientFunds &&
+            snapshot?.meta?.status === "playing" &&
+            snapshot?.gameplay?.turnStatus === "awaiting-end" &&
+            payer &&
+            owner &&
+            payerId !== ownerId &&
+            property?.ownerId === ownerId &&
+            Number.isFinite(payer.money) &&
+            Number.isFinite(owner.money)
+        ) {
             return {
                 success: true,
                 bankrupt: false,
@@ -754,29 +1011,7 @@ export function payRentInCloud( roomId, payerId, ownerId, rentAmount, logMessage
             };
         }
 
-        // La transacción no se confirmó. Comprobar si la causa fue que el jugador no tenía dinero suficiente
-        const payer = snapshot?.players?.[payerId];
-        const owner = snapshot?.players?.[ownerId];
-
-        if (
-            snapshot?.meta?.status !== "finished" &&
-            payer &&
-            owner &&
-            payerId !== ownerId &&
-            Number.isFinite(payer.money) &&
-            payer.money < rentAmount
-        ) {
-            return {
-                success: false,
-                bankrupt: true
-            };
-        }
-
-        // No confundir un jugador inexistente u otro fallo con una bancarrota.
-        throw new Error(
-            "No se pudo completar el pago del alquiler. " +
-            "Verifica el estado de los jugadores y la sala."
-        );
+        throw new Error( "No se pudo completar el pago del alquiler. Verifica el turno, la propiedad y el estado de la sala." );
     });
 }
 
