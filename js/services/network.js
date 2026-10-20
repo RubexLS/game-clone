@@ -983,7 +983,6 @@ export function payRentInCloud( roomId, propertyId, payerId, ownerId, logMessage
             return {
                 success: true,
                 bankrupt: false,
-                // rentAmount: snapshot ? undefined : undefined,
                 snapshot
             };
         }
@@ -1005,9 +1004,10 @@ export function payRentInCloud( roomId, propertyId, payerId, ownerId, logMessage
             Number.isFinite(owner.money)
         ) {
             return {
-                success: true,
-                bankrupt: false,
-                snapshot
+                success: false,
+                bankrupt: true,
+                snapshot,
+                message: `${payer.name} no tiene dinero suficiente para pagar el alquiler.`
             };
         }
 
@@ -1398,5 +1398,177 @@ export function registerJailAttemptInCloud( roomId, playerId, jailTurns, logMess
         }
 
         return result.snapshot.val();
+    });
+}
+
+function getInteractionCardDetails(roomData, playerId, deckType, cardId) {
+    if (
+        !roomData ||
+        roomData.meta?.status !== "playing" ||
+        roomData.gameplay?.turnStatus !== "awaiting-end"
+    ) {
+        return null;
+    }
+
+    const players = roomData.players || {};
+    const player = players[playerId];
+    const playerIds = Object.keys(players);
+    const turnIndex = roomData.gameplay.currentTurnIndex ?? 0;
+
+    if (
+        !player ||
+        !Number.isFinite(player.money) ||
+        !Number.isInteger(turnIndex) ||
+        turnIndex < 0 ||
+        turnIndex >= playerIds.length ||
+        playerIds[turnIndex] !== playerId
+    ) {
+        return null;
+    }
+
+    const decks = {
+        chance: CHANCE_CARDS,
+        community: COMMUNITY_CHEST_CARDS
+    };
+
+    const deck = decks[deckType];
+
+    if (!deck || !Number.isInteger(Number(cardId))) {
+        return null;
+    }
+
+    const card = deck.find(item => item.id === Number(cardId));
+
+    if (
+        !card ||
+        !["pay_each_player", "receive_from_each_player"].includes(card.type) ||
+        !Number.isFinite(card.amount) ||
+        card.amount < 0
+    ) {
+        return null;
+    }
+
+    const otherPlayers = Object.entries(players)
+        .filter(([id]) => id !== playerId);
+
+    // Verificar los saldos antes de modificar a cualquier jugador.
+    for (const [id, otherPlayer] of otherPlayers) {
+        if (!Number.isFinite(otherPlayer.money)) {
+            return null;
+        }
+
+        if (
+            card.type === "receive_from_each_player" &&
+            otherPlayer.money < card.amount
+        ) {
+            return {
+                player,
+                card,
+                otherPlayers,
+                insufficientFunds: true,
+                debtorId: id,
+                cost: card.amount
+            };
+        }
+    }
+
+    const totalPayment = card.amount * otherPlayers.length;
+
+    if (
+        card.type === "pay_each_player" &&
+        player.money < totalPayment
+    ) {
+        return {
+            player,
+            card,
+            otherPlayers,
+            insufficientFunds: true,
+            debtorId: playerId,
+            cost: totalPayment
+        };
+    }
+
+    return {
+        player,
+        card,
+        otherPlayers,
+        insufficientFunds: false
+    };
+}
+
+export function applyPlayerInteractionCardInCloud( roomId, playerId, deckType, cardId ) {
+    const roomRef = ref(db, `rooms/${roomId}`);
+
+    return runTransaction(roomRef, roomData => {
+        const details = getInteractionCardDetails( roomData, playerId, deckType, cardId );
+
+        if (!details || details.insufficientFunds) return;
+
+        const { player, card, otherPlayers } = details;
+        const players = roomData.players;
+
+        if (card.type === "pay_each_player") {
+            players[playerId] = {
+                ...player,
+                money: player.money - card.amount * otherPlayers.length
+            };
+
+            for (const [id, otherPlayer] of otherPlayers) {
+                players[id] = {
+                    ...otherPlayer,
+                    money: otherPlayer.money + card.amount
+                };
+            }
+        }
+
+        if (card.type === "receive_from_each_player") {
+            let totalReceived = 0;
+
+            for (const [id, otherPlayer] of otherPlayers) {
+                players[id] = {
+                    ...otherPlayer,
+                    money: otherPlayer.money - card.amount
+                };
+
+                totalReceived += card.amount;
+            }
+
+            players[playerId] = {
+                ...player,
+                money: player.money + totalReceived
+            };
+        }
+
+        roomData.players = players;
+        roomData.gameplay.lastAction = card.type === "pay_each_player" ? `${player.name} pagó $${card.amount} a cada jugador.` : `${player.name} recibió $${card.amount} de cada jugador.`;
+
+        return roomData;
+    }).then(result => {
+        const snapshot = result.snapshot.val();
+
+        if (result.committed) {
+            return {
+                success: true,
+                bankrupt: false,
+                snapshot,
+                message: snapshot?.gameplay?.lastAction
+            };
+        }
+
+        // Volver a validar contra el estado final de Firebase.
+        const details = getInteractionCardDetails( snapshot, playerId, deckType, cardId );
+
+        if (details?.insufficientFunds) {
+            return {
+                success: false,
+                bankrupt: false,
+                insufficientFunds: true,
+                debtorId: details.debtorId,
+                cost: details.cost,
+                message: `${snapshot.players[details.debtorId].name} no tiene dinero suficiente para completar el pago.`
+            };
+        }
+
+        throw new Error( "No se pudo procesar la carta. Verifica el turno y el estado de la sala." );
     });
 }

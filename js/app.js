@@ -1,7 +1,7 @@
 import { renderBoard } from './ui/render.js';
 import { Player, drawPlayerToken } from './core/player.js';
 import { loginAnonymously } from './services/auth.js';
-import { createGameRoom, syncPlayerToRoom, listenToRoom, updateDiceResult, buyPropertyInCloud, endTurnInCloud, getRoomSnapshot, payRentInCloud, payTaxInCloud, setTurnStatus, sendPlayerToJailInCloud, payJailFineInCloud, useJailCardInCloud, registerJailAttemptInCloud, buildHouseInCloud, buildHotelInCloud, handleBankruptcyInCloud, mortgagePropertyInCloud, unmortgagePropertyInCloud, sellHouseInCloud, sellHotelInCloud, payCardCostInCloud } from './services/network.js';
+import { createGameRoom, syncPlayerToRoom, listenToRoom, updateDiceResult, buyPropertyInCloud, endTurnInCloud, getRoomSnapshot, payRentInCloud, payTaxInCloud, setTurnStatus, sendPlayerToJailInCloud, payJailFineInCloud, useJailCardInCloud, registerJailAttemptInCloud, buildHouseInCloud, buildHotelInCloud, handleBankruptcyInCloud, mortgagePropertyInCloud, unmortgagePropertyInCloud, sellHouseInCloud, sellHotelInCloud, payCardCostInCloud, applyPlayerInteractionCardInCloud } from './services/network.js';
 import { GameManager } from './core/game.js';
 import { BOARD_SQUARES, getSquareById } from './core/board.js';
 import { CHANCE_CARDS, COMMUNITY_CHEST_CARDS, CardDeck, applyBasicCardEffect, applyPlayerInteractionCardEffect, applySpecialCardEffect } from './core/cards.js';
@@ -20,8 +20,20 @@ let currentLandingSquare = null;
 const btnEndTurn = document.getElementById('btn-end-turn');
 
 function drawCardForSquare(square) {
-    if (square.type === "chance") return chanceDeck.drawCard();
-    if (square.type === "community-chest") return communityChestDeck.drawCard();
+    if (square.type === "chance") {
+        return {
+            ...chanceDeck.drawCard(),
+            deckType: "chance"
+        };
+    }
+
+    if (square.type === "community-chest") {
+        return {
+            ...communityChestDeck.drawCard(),
+            deckType: "community"
+        };
+    }
+
     return null;
 }
 
@@ -1330,99 +1342,107 @@ document.addEventListener('DOMContentLoaded', () => {
             let message = null;
             let cardDice = [0, 0];
 
-            // Cartas que afectan únicamente al jugador actual
-            const basicCardTypes = [
-                "receive_money",
-                "pay_money",
-                "move_back",
-                "move_to",
-                "go_to_jail",
-                "get_out_of_jail_free"
-            ];
+            // Pagos al banco: el importe se valida y descuenta en Firebase.
+            if ( card.type === "pay_money" || card.type === "property_tax" ) {
+                const result = await payCardCostInCloud(
+                    currentRoomId,
+                    localPlayer.id,
+                    card.deckType,
+                    card.id
+                );
 
-            if (card.type === "property_tax") {
-                const result = applyBasicCardEffect(
+                if (result.bankrupt) {
+                    const bankruptcyMessage = result.message || `${localPlayer.name} no tiene dinero suficiente para pagar la carta.`;
+
+                    await handleBankruptcyInCloud(
+                        currentRoomId,
+                        localPlayer.id,
+                        null,
+                        bankruptcyMessage
+                    );
+
+                    currentCard = null;
+                    cardModal.classList.add('hidden');
+                    return;
+                }
+
+                if (!result.success) throw new Error("No se pudo procesar el pago de la carta.");
+                message = result.message;
+
+            } else if ([ "receive_money", "move_back", "move_to", "go_to_jail", "get_out_of_jail_free" ].includes(card.type)) {
+
+                // Se conserva el comportamiento anterior para estas cartas.
+                message = applyBasicCardEffect(
                     card,
                     localPlayer,
                     gameManager.propertiesState
                 );
-            
-                if (result?.bankrupt) {
-                    cardModal.classList.add('hidden');
-                    currentCard = null;
-                
-                    try {
-                        await handleBankruptcyInCloud(
-                            currentRoomId,
-                            localPlayer.id,
-                            null,
-                            result.message
-                        );
-                    } catch (error) {
-                        console.error(
-                            "Error al procesar la bancarrota por reparaciones:",
-                            error
-                        );
-                        alert( "No se pudo procesar la bancarrota." );
-                    }
-                    return;
-                }
-
-                message = result;
 
                 await syncPlayerToRoom(
                     currentRoomId,
                     localPlayer
                 );
-            } else if (basicCardTypes.includes(card.type)) {
 
-                message = applyBasicCardEffect( card, localPlayer, gameManager.propertiesState );
-
-                await syncPlayerToRoom(
-                    currentRoomId,
-                    localPlayer
-                );
             } else if ( card.type === "pay_each_player" || card.type === "receive_from_each_player" ) {
 
-                const result = applyPlayerInteractionCardEffect( card, localPlayer, activePlayersList );
-                message = result;
-
-                // Sincronizamos a todos los jugadores
-                for (const player of Object.values(activePlayersList)) {
-                    await syncPlayerToRoom(
-                        currentRoomId,
-                        player
-                    );
+                const result = await applyPlayerInteractionCardInCloud(
+                    currentRoomId,
+                    localPlayer.id,
+                    card.deckType,
+                    card.id
+                );
+            
+                if (result.insufficientFunds) {
+                    alert(result.message);
+                
+                    // Por ahora no elimina al jugador automáticamente. La bancarrota requiere contemplar quiénes son los acreedores.
+                    currentCard = null;
+                    cardModal.classList.add('hidden');
+                    return;
                 }
+            
+                if (!result.success) throw new Error("No se pudo procesar la transferencia entre jugadores.");
+            
+                message = result.message;
+
             } else if (card.type === "nearest_railroad") {
 
-                const result = applySpecialCardEffect( card, localPlayer, activePlayersList );
+                const result = applySpecialCardEffect(
+                    card,
+                    localPlayer,
+                    activePlayersList
+                );
+
                 message = result.message;
-            
-                // Sincronizamos la posición y el dinero del jugador.
+
                 await syncPlayerToRoom(
                     currentRoomId,
                     localPlayer
                 );
-            
-                // Si hubo propietario, también sincronizamos su dinero.
+
                 if (result.owner) {
                     await syncPlayerToRoom(
                         currentRoomId,
                         result.owner
                     );
                 }
+
             } else if (card.type === "nearest_utility") {
 
-                const result = applySpecialCardEffect( card, localPlayer, activePlayersList );
+                const result = applySpecialCardEffect(
+                    card,
+                    localPlayer,
+                    activePlayersList
+                );
+
                 if (result.dice) cardDice = result.dice;
                 message = result.message;
-            
+
                 await syncPlayerToRoom(
                     currentRoomId,
                     localPlayer
                 );
-            
+
                 if (result.owner) {
                     await syncPlayerToRoom(
                         currentRoomId,
@@ -1445,12 +1465,7 @@ document.addEventListener('DOMContentLoaded', () => {
             drawPlayerToken(localPlayer);
 
         } catch (error) {
-
-            console.error(
-                "Error al aplicar carta:",
-                error
-            );
-
+            console.error("Error al aplicar carta:", error);
             alert(error.message);
 
             cardModal.classList.add('hidden');
