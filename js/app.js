@@ -795,7 +795,8 @@ document.addEventListener('DOMContentLoaded', () => {
                             currentRoomId,
                             localPlayer.id,
                             null,
-                            bankruptcyMessage
+                            bankruptcyMessage,
+                            taxAmount
                         );
                     } catch (error) {
                         console.error(
@@ -870,7 +871,8 @@ document.addEventListener('DOMContentLoaded', () => {
                                 currentRoomId,
                                 localPlayer.id,
                                 ownerId,
-                                bankruptcyMessage
+                                bankruptcyMessage,
+                                rentResult.rentAmount
                             );
                         
                             buyModal?.classList.add('hidden');
@@ -1358,7 +1360,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         currentRoomId,
                         localPlayer.id,
                         null,
-                        bankruptcyMessage
+                        bankruptcyMessage,
+                        result.cost
                     );
 
                     currentCard = null;
@@ -1391,18 +1394,34 @@ document.addEventListener('DOMContentLoaded', () => {
                     card.deckType,
                     card.id
                 );
-            
+
+                // El jugador activo no puede pagar a todos los demás. La bancarrota es contra el banco.
                 if (result.insufficientFunds) {
-                    alert(result.message);
-                
-                    // Por ahora no elimina al jugador automáticamente. La bancarrota requiere contemplar quiénes son los acreedores.
+                    if (card.type === "pay_each_player") {
+                        const bankruptcyMessage =
+                            result.message || `${localPlayer.name} no tiene dinero suficiente para pagar a todos los jugadores.`;
+
+                        await handleBankruptcyInCloud(
+                            currentRoomId,
+                            localPlayer.id,
+                            null,
+                            bankruptcyMessage,
+                            result.cost
+                        );
+                    } else {
+                        alert(result.message || "No se pudo completar la transferencia entre jugadores."
+                        );
+                    }
+
                     currentCard = null;
                     cardModal.classList.add('hidden');
                     return;
                 }
-            
-                if (!result.success) throw new Error("No se pudo procesar la transferencia entre jugadores.");
-            
+
+                if (!result.success) {
+                    throw new Error("No se pudo procesar la transferencia entre jugadores.");
+                }
+
                 message = result.message;
 
             } else if (card.type === "nearest_railroad") {
@@ -1451,15 +1470,22 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
 
+            
             currentCard = null;
             cardModal.classList.add('hidden');
 
             if (message) {
-                await updateDiceResult(
-                    currentRoomId,
-                    cardDice,
-                    message
-                );
+                const roomSnapshot = await getRoomSnapshot(currentRoomId);
+                const roomData = roomSnapshot?.val();
+
+                // No actualizar los dados si una carta terminó la partida.
+                if (roomData?.meta?.status === "playing") {
+                    await updateDiceResult(
+                        currentRoomId,
+                        cardDice,
+                        message
+                    );
+                }
             }
 
             drawPlayerToken(localPlayer);

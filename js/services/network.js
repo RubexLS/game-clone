@@ -218,11 +218,27 @@ export function listenToRoom(roomId, callback) {
 export function updateDiceResult(roomId, diceValues, statusText) {
     const roomRef = ref(db, `rooms/${roomId}`);
 
-    return update(roomRef, {
-        "gameplay/dice": diceValues,
-        "gameplay/lastAction": statusText,
-        "gameplay/turnStatus": "awaiting-end",
-        "meta/status": "playing"
+    return runTransaction(roomRef, roomData => {
+        if (!roomData) return;
+        // No modificar una partida que ya terminó.
+        if (roomData.meta?.status !== "playing") return;
+        // No modificar una partida sin jugadores.
+        if (!roomData.players || Object.keys(roomData.players).length === 0) return;
+
+        roomData.gameplay = {
+            ...roomData.gameplay,
+            dice: diceValues,
+            lastAction: statusText,
+            turnStatus: "awaiting-end"
+        };
+
+        return roomData;
+    }).then(result => {
+        if (!result.committed) {
+            throw new Error("No se pudo actualizar el resultado de los dados: la partida terminó o la sala no es válida.");
+        }
+
+        return result.snapshot.val();
     });
 }
 
@@ -831,6 +847,101 @@ export function buildHotelInCloud( roomId, propertyId, playerId, hotelCost, logM
     });
 }
 
+function calculateAuthoritativeRent(roomData, propertyId, payerId, ownerId) {
+    if (!roomData || roomData.meta?.status !== "playing" || roomData.gameplay?.turnStatus !== "awaiting-end" ) return null;
+
+    const players = roomData.players || {};
+    const properties = roomData.properties || {};
+    const payer = players[payerId];
+    const owner = players[ownerId];
+    const property = properties[propertyId];
+
+    if (
+        !payer ||
+        !owner ||
+        payerId === ownerId ||
+        !property ||
+        property.ownerId !== ownerId ||
+        !Number.isFinite(payer.money) ||
+        !Number.isFinite(owner.money)
+    ) return null;
+
+    const playerIds = Object.keys(players);
+    const turnIndex = roomData.gameplay.currentTurnIndex;
+
+    if (
+        !Number.isInteger(turnIndex) ||
+        turnIndex < 0 ||
+        turnIndex >= playerIds.length ||
+        playerIds[turnIndex] !== payerId
+    ) return null;
+
+    const square = BOARD_SQUARES.find(item => item.id === Number(propertyId));
+
+    if (!square || !["property", "railroad", "utility"].includes(square.type)) return null;
+
+    const dice = roomData.gameplay.dice;
+
+    if (
+        !Array.isArray(dice) ||
+        dice.length !== 2 ||
+        !dice.every(value => Number.isInteger(value) && value >= 1 && value <= 6)
+    ) return null;
+
+    // Las propiedades hipotecadas no cobran alquiler.
+    if (property.mortgaged === true) return 0;
+
+    if (square.type === "property") {
+        const houses = property.houses ?? 0;
+        const hotel = property.hotel === true;
+        const rents = square.rent;
+
+        if (
+            !Array.isArray(rents) ||
+            rents.length < 6 ||
+            !rents.every(value => Number.isFinite(value) && value >= 0) ||
+            !Number.isInteger(houses) ||
+            houses < 0 ||
+            houses > 4 ||
+            (hotel && houses !== 0)
+        ) return null;
+
+        if (hotel) return rents[5];
+        if (houses > 0) return rents[houses];
+
+        const group = BOARD_SQUARES.filter(item => item.type === "property" && item.group === square.group);
+        const ownsEntireGroup = group.length > 0 && group.every(item => properties[item.id]?.ownerId === ownerId);
+
+        return rents[0] * (ownsEntireGroup ? 2 : 1);
+    }
+
+    if (square.type === "railroad") {
+        const count = BOARD_SQUARES.filter(
+            item =>
+                item.type === "railroad" &&
+                properties[item.id]?.ownerId === ownerId
+        ).length;
+
+        const rents = [0, 25, 50, 100, 200];
+
+        return count >= 1 && count <= 4 ? rents[count] : null;
+    }
+
+    if (square.type === "utility") {
+        const count = BOARD_SQUARES.filter(
+            item =>
+                item.type === "utility" &&
+                properties[item.id]?.ownerId === ownerId
+        ).length;
+
+        if (count < 1 || count > 2) return null;
+
+        return (dice[0] + dice[1]) * (count === 1 ? 4 : 10);
+    }
+
+    return null;
+}
+
 export function payRentInCloud( roomId, propertyId, payerId, ownerId, logMessage ) {
     
     const roomRef = ref(db, `rooms/${roomId}`);
@@ -840,8 +951,6 @@ export function payRentInCloud( roomId, propertyId, payerId, ownerId, logMessage
     if (!boardProperty || !["property", "railroad", "utility"].includes(boardProperty.type)) {
         return Promise.reject(new Error("La casilla no admite el cobro de alquiler."));
     }
-
-    let insufficientFunds = false;
 
     return runTransaction(roomRef, (roomData) => {
         insufficientFunds = false;
@@ -956,6 +1065,8 @@ export function payRentInCloud( roomId, propertyId, payerId, ownerId, logMessage
             return;
         }
 
+        calculatedRent = authoritativeRent;
+
         // Si no tiene dinero suficiente, cancelar sin transferir.
         if (payer.money < authoritativeRent) {
             insufficientFunds = true;
@@ -978,6 +1089,7 @@ export function payRentInCloud( roomId, propertyId, payerId, ownerId, logMessage
         return roomData;
     }).then((result) => {
         const snapshot = result.snapshot.val();
+        const rentAmount = calculateAuthoritativeRent(snapshot, numericPropertyId, payerId, ownerId);
 
         if (result.committed) {
             return {
@@ -993,21 +1105,18 @@ export function payRentInCloud( roomId, propertyId, payerId, ownerId, logMessage
 
         // Solo reconocer bancarrota si la sala y los jugadores siguen existiendo y la propiedad sigue perteneciendo al arrendador
         if (
-            insufficientFunds &&
-            snapshot?.meta?.status === "playing" &&
-            snapshot?.gameplay?.turnStatus === "awaiting-end" &&
-            payer &&
-            owner &&
-            payerId !== ownerId &&
-            property?.ownerId === ownerId &&
-            Number.isFinite(payer.money) &&
-            Number.isFinite(owner.money)
+            rentAmount !== null &&
+            rentAmount !== undefined &&
+            snapshot?.players?.[payerId]?.money < rentAmount
         ) {
+            const payer = snapshot.players[payerId];
+
             return {
                 success: false,
                 bankrupt: true,
+                rentAmount,
                 snapshot,
-                message: `${payer.name} no tiene dinero suficiente para pagar el alquiler.`
+                message: `${payer.name} no tiene dinero suficiente para pagar $${rentAmount} de alquiler.`
             };
         }
 
@@ -1137,7 +1246,7 @@ export function payTaxInCloud( roomId, playerId, taxAmount, logMessage ) {
     });
 }
 
-export function handleBankruptcyInCloud( roomId, debtorId, creditorId, logMessage ) {
+export function handleBankruptcyInCloud( roomId, debtorId, creditorId, logMessage, expectedDebt ) {
     const roomRef = ref(db, `rooms/${roomId}`);
 
     return runTransaction(roomRef, (roomData) => {
@@ -1154,12 +1263,19 @@ export function handleBankruptcyInCloud( roomId, debtorId, creditorId, logMessag
         // El deudor todavía debe existir.
         if (!debtor) return;
 
+        // Validar que exista una deuda comprobable.
+        if (!Number.isFinite(expectedDebt) || expectedDebt < 0 || !Number.isFinite(debtor.money) || debtor.money >= expectedDebt) {
+            return;
+        }
+
         // Guardar el orden y el turno antes de eliminar al jugador.
         const gameplay = roomData.gameplay || {};
         const playerOrderBefore = Object.keys(players);
         const debtorIndex = playerOrderBefore.indexOf(debtorId);
         const currentTurnIndex = Number.isInteger(gameplay.currentTurnIndex) ? gameplay.currentTurnIndex : 0;
         const debtorWasActive = debtorIndex === currentTurnIndex;
+
+        if (roomData.meta?.status !== "playing" || gameplay.turnStatus !== "awaiting-end" || !debtorWasActive) return;
 
         // Si existe un acreedor, debe ser válido y distinto del deudor.
         if (creditorId) {
@@ -1402,13 +1518,7 @@ export function registerJailAttemptInCloud( roomId, playerId, jailTurns, logMess
 }
 
 function getInteractionCardDetails(roomData, playerId, deckType, cardId) {
-    if (
-        !roomData ||
-        roomData.meta?.status !== "playing" ||
-        roomData.gameplay?.turnStatus !== "awaiting-end"
-    ) {
-        return null;
-    }
+    if (!roomData || roomData.meta?.status !== "playing" || roomData.gameplay?.turnStatus !== "awaiting-end") return null;
 
     const players = roomData.players || {};
     const player = players[playerId];
@@ -1422,20 +1532,12 @@ function getInteractionCardDetails(roomData, playerId, deckType, cardId) {
         turnIndex < 0 ||
         turnIndex >= playerIds.length ||
         playerIds[turnIndex] !== playerId
-    ) {
-        return null;
-    }
+    ) return null;
 
-    const decks = {
-        chance: CHANCE_CARDS,
-        community: COMMUNITY_CHEST_CARDS
-    };
-
+    const decks = {chance: CHANCE_CARDS, community: COMMUNITY_CHEST_CARDS};
     const deck = decks[deckType];
 
-    if (!deck || !Number.isInteger(Number(cardId))) {
-        return null;
-    }
+    if (!deck || !Number.isInteger(Number(cardId))) return null;
 
     const card = deck.find(item => item.id === Number(cardId));
 
@@ -1444,47 +1546,35 @@ function getInteractionCardDetails(roomData, playerId, deckType, cardId) {
         !["pay_each_player", "receive_from_each_player"].includes(card.type) ||
         !Number.isFinite(card.amount) ||
         card.amount < 0
-    ) {
-        return null;
-    }
+    ) return null;
 
-    const otherPlayers = Object.entries(players)
-        .filter(([id]) => id !== playerId);
+    const otherPlayers = Object.entries(players).filter(([id]) => id !== playerId);
+    const insolventDebtors = [];
 
-    // Verificar los saldos antes de modificar a cualquier jugador.
     for (const [id, otherPlayer] of otherPlayers) {
-        if (!Number.isFinite(otherPlayer.money)) {
-            return null;
-        }
+        if (!Number.isFinite(otherPlayer.money)) return null;
 
-        if (
-            card.type === "receive_from_each_player" &&
-            otherPlayer.money < card.amount
-        ) {
-            return {
-                player,
-                card,
-                otherPlayers,
-                insufficientFunds: true,
+        if (card.type === "receive_from_each_player" && otherPlayer.money < card.amount) {
+            insolventDebtors.push({
                 debtorId: id,
                 cost: card.amount
-            };
+            });
         }
     }
 
     const totalPayment = card.amount * otherPlayers.length;
 
-    if (
-        card.type === "pay_each_player" &&
-        player.money < totalPayment
-    ) {
+    if (!Number.isFinite(totalPayment) || card.amount * otherPlayers.length < 0) return null;
+
+    if (card.type === "pay_each_player" && player.money < totalPayment) {
         return {
             player,
             card,
             otherPlayers,
             insufficientFunds: true,
             debtorId: playerId,
-            cost: totalPayment
+            cost: totalPayment,
+            insolventDebtors: []
         };
     }
 
@@ -1492,25 +1582,41 @@ function getInteractionCardDetails(roomData, playerId, deckType, cardId) {
         player,
         card,
         otherPlayers,
-        insufficientFunds: false
+        insufficientFunds: false,
+        insolventDebtors
     };
 }
 
 export function applyPlayerInteractionCardInCloud( roomId, playerId, deckType, cardId ) {
     const roomRef = ref(db, `rooms/${roomId}`);
+    let eliminatedPlayers = [];
 
     return runTransaction(roomRef, roomData => {
-        const details = getInteractionCardDetails( roomData, playerId, deckType, cardId );
+        eliminatedPlayers = [];
+
+        const details = getInteractionCardDetails(
+            roomData,
+            playerId,
+            deckType,
+            cardId
+        );
 
         if (!details || details.insufficientFunds) return;
 
-        const { player, card, otherPlayers } = details;
-        const players = roomData.players;
+        const {player, card, otherPlayers, insolventDebtors} = details;
+        const players = { ...roomData.players };
+        const properties = { ...(roomData.properties || {}) };
+        const gameplay = { ...(roomData.gameplay || {}) };
+        const bankruptIds = insolventDebtors.map(item => item.debtorId);
+
+        eliminatedPlayers = [...bankruptIds];
 
         if (card.type === "pay_each_player") {
+            const totalPayment = card.amount * otherPlayers.length;
+
             players[playerId] = {
                 ...player,
-                money: player.money - card.amount * otherPlayers.length
+                money: player.money - totalPayment
             };
 
             for (const [id, otherPlayer] of otherPlayers) {
@@ -1519,12 +1625,12 @@ export function applyPlayerInteractionCardInCloud( roomId, playerId, deckType, c
                     money: otherPlayer.money + card.amount
                 };
             }
-        }
-
-        if (card.type === "receive_from_each_player") {
+        } else {
             let totalReceived = 0;
 
             for (const [id, otherPlayer] of otherPlayers) {
+                if (bankruptIds.includes(id)) continue;
+
                 players[id] = {
                     ...otherPlayer,
                     money: otherPlayer.money - card.amount
@@ -1537,10 +1643,64 @@ export function applyPlayerInteractionCardInCloud( roomId, playerId, deckType, c
                 ...player,
                 money: player.money + totalReceived
             };
+
+            // Transferir las propiedades de cada jugador insolvente al jugador que debía recibir el dinero.
+            for (const debtorId of bankruptIds) {
+                for (const [propertyId, property] of Object.entries(properties)) {
+                    if (property?.ownerId !== debtorId) continue;
+
+                    properties[propertyId] = {
+                        ...property,
+                        ownerId: playerId,
+                        houses: 0,
+                        hotel: false,
+                        mortgaged: property.mortgaged === true
+                    };
+                }
+
+                delete players[debtorId];
+            }
+
+            // Ajustar el turno si se eliminaron jugadores anteriores al jugador activo en el orden original.
+            const originalOrder = Object.keys(roomData.players);
+            const originalTurnIndex = gameplay.currentTurnIndex;
+            const activeIndex = originalOrder.indexOf(playerId);
+
+            if (activeIndex === -1) return;
+
+            const removedBeforeActive = bankruptIds.filter(id => originalOrder.indexOf(id) < activeIndex).length;
+            const remainingIds = Object.keys(players);
+
+            if (remainingIds.length > 0) gameplay.currentTurnIndex = activeIndex - removedBeforeActive;
+
+            // Comprobar si queda un único ganador.
+            if (remainingIds.length === 1) {
+                const winnerId = remainingIds[0];
+
+                roomData.meta = {
+                    ...roomData.meta,
+                    status: "finished",
+                    winnerId,
+                    winnerName: players[winnerId].name
+                };
+
+                gameplay.turnStatus = "finished";
+            }
+
+            if (bankruptIds.length > 0) {
+                const names = bankruptIds
+                    .map(id => otherPlayers.find(([otherId]) => otherId === id)?.[1].name || id)
+                    .join(", ");
+
+                gameplay.lastAction = `${player.name} recibió $${card.amount} de cada jugador solvente. Bancarrota: ${names}. Sus propiedades fueron transferidas a ${player.name}.`;
+            } else {
+                gameplay.lastAction = `${player.name} recibió $${card.amount} de cada jugador.`;
+            }
         }
 
         roomData.players = players;
-        roomData.gameplay.lastAction = card.type === "pay_each_player" ? `${player.name} pagó $${card.amount} a cada jugador.` : `${player.name} recibió $${card.amount} de cada jugador.`;
+        roomData.properties = properties;
+        roomData.gameplay = gameplay;
 
         return roomData;
     }).then(result => {
@@ -1551,12 +1711,12 @@ export function applyPlayerInteractionCardInCloud( roomId, playerId, deckType, c
                 success: true,
                 bankrupt: false,
                 snapshot,
-                message: snapshot?.gameplay?.lastAction
+                message: snapshot?.gameplay?.lastAction,
+                eliminatedPlayers: [...eliminatedPlayers]
             };
         }
 
-        // Volver a validar contra el estado final de Firebase.
-        const details = getInteractionCardDetails( snapshot, playerId, deckType, cardId );
+        const details = getInteractionCardDetails(snapshot, playerId, deckType, cardId);
 
         if (details?.insufficientFunds) {
             return {
@@ -1565,10 +1725,10 @@ export function applyPlayerInteractionCardInCloud( roomId, playerId, deckType, c
                 insufficientFunds: true,
                 debtorId: details.debtorId,
                 cost: details.cost,
-                message: `${snapshot.players[details.debtorId].name} no tiene dinero suficiente para completar el pago.`
+                message: `${snapshot.players[details.debtorId].name} no tiene dinero suficiente para pagar $${details.cost}.`
             };
         }
 
-        throw new Error( "No se pudo procesar la carta. Verifica el turno y el estado de la sala." );
+        throw new Error("No se pudo procesar la carta. Verifica el turno y el estado de la sala.");
     });
 }
